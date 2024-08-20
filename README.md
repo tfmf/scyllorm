@@ -1,19 +1,26 @@
-# Scyllorm
-Scyllorm is an experimental TypeScript ORM for ScyllaDB, offering early-stage tools for seamless database interactions in Node.js. It's higlhy opinated and based on [TypeORM](https://github.com/typeorm/typeorm) and it's itendend to be easy to use and to setup. There a bunch of features missing some of them are in the backlog and some are not supported by Scylla. We use the Node.js [cassandra driver](https://github.com/datastax/nodejs-driver/) so in theory you can also use this for Cassandra (never tested). We also only implemented [Data Mapper Pattern](https://en.wikipedia.org/wiki/Data_mapper_pattern) but possible in future we will implement the [Active Record Pattern](https://en.wikipedia.org/wiki/Active_record_pattern).
 
-## Prerequisites
-- <img src="https://github.com/user-attachments/assets/9804b3c6-4be3-4741-a1c9-ff4460eef94e" alt="node" width="20" height="20"> Node.js: Needs to be installed in order to use the package
-- <img src="https://github.com/user-attachments/assets/32da44a9-cc43-4987-af94-696488792995" alt="node" width="20" height="20"> Docker: Best way to run ScyllaDB locally
+# Scyllorm 🦑
+Welcome to **Scyllorm**—an experimental TypeScript ORM for ScyllaDB that’s so fresh, it’s practically still in beta diapers. Inspired by [TypeORM](https://github.com/typeorm/typeorm), we’ve set out to simplify database interactions in Node.js. By “simplify,” we mean it’s highly opinionated, so prepare to adopt our opinions, or go find another ORM. Features? Yeah, we’ve got some—just not all of them (yet). A few are stuck in the backlog, and others are on Scylla’s “no-can-do” list. 
 
-## Installation
+And by the way, we use the Node.js [Cassandra driver](https://github.com/datastax/nodejs-driver/), so theoretically, you could use this with Cassandra too... but we haven’t tested it. So if you’re feeling adventurous, go ahead and be our guinea pig.
+
+Oh, and we’re currently rolling with the [Data Mapper Pattern](https://en.wikipedia.org/wiki/Data_mapper_pattern) because it’s what all the cool ORMs are doing. Maybe someday we’ll add the [Active Record Pattern](https://en.wikipedia.org/wiki/Active_record_pattern), but we’re still debating whether we like our records active or not.
+
+## Prerequisites 🎒
+- <img src="https://github.com/user-attachments/assets/9804b3c6-4be3-4741-a1c9-ff4460eef94e" alt="node" width="20" height="20"> **Node.js:** If you don't have this, you might be in the wrong place.
+- <img src="https://github.com/user-attachments/assets/32da44a9-cc43-4987-af94-696488792995" alt="docker" width="20" height="20"> **Docker:** The easiest way to spin up ScyllaDB locally without accidentally summoning Cthulhu.
+
+## Installation 🚀
+To install Scyllorm, just hit it with the good ol’ NPM:
+
 ```bash
 npm install scyllorm
 ```
 
-## Step-by-Step Guide
-1. Run ScyllaDB in Docker or using Docker Compose 🐳
+## Step-by-Step Guide 🛠
+### 1. Summon ScyllaDB via Docker 🐳
 
-  Docker:
+**Docker:**
 
 ```bash
 docker run -d \
@@ -29,7 +36,7 @@ docker run -d \
   --max-clustering-key-restrictions-per-query 1500
 ```
 
-docker-compose:
+**docker-compose:**
 
 ```bash
   core_scylladb:
@@ -42,15 +49,16 @@ docker-compose:
       - ./scylladb_data:/var/lib/scylla
 ```
 
-3. Test your connection
+### 2. Test Your Connection 🎯
+- For a friendly UI, try [DbVisualizer Free](https://www.dbvis.com/).
+- Or, if you're feeling hardcore, dive into the terminal:
 
-- You can use DbVisualizer Free (https://www.dbvis.com/)
-- Or connect directly from your terminal:
 ```bash
 docker exec -it scylladb_server cqlsh -u cassandra -p cassandra
 ```
 
-2. Create a test table
+### 3. Create a Test Table 🛠️
+Because what’s a database without a table?
 
 ```cql
 CREATE KEYSPACE test_keyspace WITH REPLICATION = {'class': 'SimpleStrategy', 'replication_factor': 1} AND durable_writes = true;
@@ -62,20 +70,20 @@ CREATE TABLE employees (
   first_name text,
   last_name text,
   age int,
-  city text
+  city text,
   created_at timestamp,
   updated_at timestamp,
   deleted_at timestamp,
-  PRIMARY KEY (id, name)
+  PRIMARY KEY (id, first_name)
 );
 
 CREATE INDEX employees_first_first_name_idx ON employees (first_name);
 CREATE INDEX employees_first_last_name_idx ON employees (last_name);
-
-
 ```
 
-3. Create your model
+### 4. Create Your Model 🎨
+Now, let’s make a model:
+
 ```typescript
 import { BaseModel, Column, Index, PrimaryKeyColumn, Table } from 'scyllorm';
 
@@ -109,14 +117,16 @@ export class Employee extends BaseModel {
 }
 ```
 
-4. Setup the DataSource 🛢
+### 5. Setup the DataSource 🛢
+This is where the magic happens:
+
 ```typescript
 import { DataSource } from 'scyllorm';
 
 const dataSource = new DataSource({
-    contactPoints: ['localhost'], // Example contact point, adjust as needed
+    contactPoints: ['localhost'], // Change this if your setup is fancier
     localDataCenter: 'datacenter1',
-    keyspace: 'test_space',
+    keyspace: 'test_keyspace',
     credentials: {
         username: 'cassandra',
         password: 'cassandra',
@@ -125,7 +135,9 @@ const dataSource = new DataSource({
 });
 ```
 
-5. Use the repository
+### 6. Use the Repository 🛠
+Now, let’s put this thing to work:
+
 ```typescript
  async function run() {
     try {
@@ -156,21 +168,31 @@ const dataSource = new DataSource({
         const employeeId = 1;
 
         const findOneById = await repository.findOneBy({ id: employeeId });
-        console.log(findOneById);
+        console.log('Found by ID:', findOneById);
 
         const findById = await repository.findBy({ id: employeeId });
-        console.log(findById);
+        console.log('Found by findBy:', findById);
 
         const findEmployee = await repository.find({ where: { id: employeeId } });
-        console.log(findEmployee);
+        console.log('Found by find:', findEmployee);
 
         const allEmployees = await repository.find();
-        console.log(allEmployees);
+        console.log('All Employees:', allEmployees);
     } catch (error) {
         console.error('Error:', error);
     } finally {
-        await dataSource.shutdown(); // Properly shut down the DataSource
+        await dataSource.shutdown(); // Don’t forget to shut it down, or it might haunt you later.
     }
 }
 run();
 ```
+
+And that’s it! If you followed along and didn’t encounter any errors, you’re officially ready to start messing with ScyllaDB using TypeScript in Node.js. Congratulations! 🎉🌊🦑💻
+
+## Contributing
+Found a bug? Want to add a feature?  We welcome all contributions! Just open a PR and we'll review it as fas as humanly possible (or not)
+
+## License
+GNU General Public License v3.0
+
+
