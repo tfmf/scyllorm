@@ -1,0 +1,6 @@
+/node_modules
+package-lock.json
+.vscode
+scyllorm-0.0.1.tgz
+_example.ts
+.DS_Store
