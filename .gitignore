@@ -1,6 +1,8 @@
 /node_modules
+/dist
 package-lock.json
 .vscode
 scyllorm-0.0.1.tgz
 _example.ts
+_model.ts
 .DS_Store
