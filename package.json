@@ -8,6 +8,14 @@
         "type": "git",
         "url": "https://github.com/tfmf/scyllorm.git"
     },
+    "keywords": [
+		"ScyllaDB",
+		"ORM",
+        "cassandra",
+        "cql",
+        "nosql",
+        "database"
+	],
     "author": "Tiago Ferreira",
     "license": "GPLv3",
     "scripts": {
