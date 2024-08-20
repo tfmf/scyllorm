@@ -16,6 +16,7 @@ To install Scyllorm, just hit it with the good ol’ NPM:
 ```bash
 npm install scyllorm
 ```
+(https://www.npmjs.com/package/scyllorm)
 
 ## Step-by-Step Guide 🛠
 ### 1. Summon ScyllaDB via Docker 🐳
