@@ -1,6 +1,6 @@
 {
     "name": "scyllorm",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "description": "A TypeScript ORM for ScyllaDB",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
@@ -9,13 +9,13 @@
         "url": "https://github.com/tfmf/scyllorm.git"
     },
     "keywords": [
-		"ScyllaDB",
-		"ORM",
+        "ScyllaDB",
+        "ORM",
         "cassandra",
         "cql",
         "nosql",
         "database"
-	],
+    ],
     "author": "Tiago Ferreira",
     "license": "GPLv3",
     "scripts": {
