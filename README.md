@@ -1,5 +1,7 @@
 
 # Scyllorm 🦑
+[![npm downloads](https://img.shields.io/npm/dt/scyllorm.svg)](https://www.npmjs.com/package/scyllorm)
+
 Welcome to **Scyllorm**—an experimental TypeScript ORM for ScyllaDB that’s so fresh, it’s practically still in beta diapers. Inspired by [TypeORM](https://github.com/typeorm/typeorm), we’ve set out to simplify database interactions in Node.js. By “simplify,” we mean it’s highly opinionated, so prepare to adopt our opinions, or go find another ORM. Features? Yeah, we’ve got some—just not all of them (yet). A few are stuck in the backlog, and others are on Scylla’s “no-can-do” list. 
 
 And by the way, we use the Node.js [Cassandra driver](https://github.com/datastax/nodejs-driver/), so theoretically, you could use this with Cassandra too... but we haven’t tested it. So if you’re feeling adventurous, go ahead and be our guinea pig.
