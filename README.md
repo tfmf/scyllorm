@@ -195,6 +195,9 @@ And that’s it! If you followed along and didn’t encounter any errors, you’
 ## Contributing
 Found a bug? Want to add a feature?  We welcome all contributions! Just open a PR and we'll review it as fas as humanly possible (or not)
 
+## Examples
+You can find examples in Typescript and Javascript inside the folder [src/examples](https://github.com/tfmf/scyllorm/tree/main/src/example)
+
 ## License
 GNU General Public License v3.0
 
