@@ -12,3 +12,4 @@ export { Column } from './decorators/Column';
 export { Table } from './decorators/Table';
 export { PrimaryKeyColumn } from './decorators/PrimaryKey';
 export { Index } from './decorators/IndexDecorator';
+export { Entity } from './decorators/Entity';
