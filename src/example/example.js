@@ -1,4 +1,4 @@
-const { Table, PrimaryKeyColumn, Column, Index, BaseModel, DataSource } = require('scyllorm');
+const { Entity, PrimaryKeyColumn, Column, Index, BaseModel, DataSource } = require('scyllorm');
 
 class Employee extends BaseModel {
     constructor() {
@@ -16,7 +16,7 @@ class Employee extends BaseModel {
 
 // Manually applying the decorators since by default, javascript does not support decorators,
 // which are still a Stage 2 proposal in ECMAScript
-Table({ name: 'employees' })(Employee);
+Entity('employees')(Employee);
 Index('employees_first_first_name_idx', 'first_name')(Employee);
 Index('employees_first_last_name_idx', 'last_name')(Employee);
 
