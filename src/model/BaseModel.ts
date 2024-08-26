@@ -1,5 +1,6 @@
 import { PrimaryKeyColumnOptions, PrimaryKeyColumnType } from '../decorators/PrimaryKey';
 import { ColumnOptions, ColumnType } from '../decorators/Column';
+import { EntityOptions } from '../decorators/Entity';
 import { IndexDefinition } from '../decorators/IndexDecorator';
 
 export class BaseModel {
@@ -7,6 +8,7 @@ export class BaseModel {
     static primaryKeys?: Array<{ name: string; type: PrimaryKeyColumnType; options?: PrimaryKeyColumnOptions }>;
     static columns?: Array<{ name: string; type: ColumnType; options?: ColumnOptions }>;
     static indexes?: Array<IndexDefinition>;
+    static entityOptions?: EntityOptions; // Add this line to support entity options
 
     /* eslint-disable @typescript-eslint/no-explicit-any */
     constructor() {
@@ -35,6 +37,10 @@ export class BaseModel {
 
     static getIndexes(): Array<IndexDefinition> {
         return this.indexes ?? [];
+    }
+
+    static getEntityOptions(): EntityOptions {
+        return this.entityOptions ?? {};
     }
 
     private assignColumnValue<T>(columnName: string, value: T): void {

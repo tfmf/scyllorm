@@ -1,6 +1,6 @@
-import { Table, PrimaryKeyColumn, Column, Index, BaseModel, DataSource } from 'scyllorm';
+import { Entity, PrimaryKeyColumn, Column, Index, BaseModel, DataSource } from 'scyllorm';
 
-@Table({ name: 'employees' })
+@Entity('employees')
 @Index('employees_first_first_name_idx', 'first_name')
 @Index('employees_first_last_name_idx', 'last_name')
 export class Employee extends BaseModel {
