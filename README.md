@@ -181,6 +181,29 @@ Now, let’s put this thing to work:
 
         const allEmployees = await repository.find();
         console.log('All Employees:', allEmployees);
+
+        // https://www.scylladb.com/2018/08/16/upcoming-enhancements-filtering-implementation/
+        const allowFiltering = true;
+        const findEmployeeWithAge30And25 = await repository.find({ where: { age: In([25, 30]) } }, allowFiltering);
+        console.log('Found Employees with age 30 and 25:', findEmployeeWithAge30And25);
+
+        const findEmployeeWithAgeAbove25 = await repository.find({ where: { age: GreaterThan(25) } }, allowFiltering);
+        console.log('Found Employees with age above 25:', findEmployeeWithAgeAbove25);
+
+        const findEmployeeWithAgeAboveOrEqualTo25 = await repository.find(
+            { where: { age: GreaterThanOrEqual(25) } },
+            allowFiltering
+        );
+        console.log('Found Employees with age equal to 25 or above:', findEmployeeWithAgeAboveOrEqualTo25);
+
+        const findEmployeeWithAgeLessThan30 = await repository.find({ where: { age: LessThan(30) } }, allowFiltering);
+        console.log('Found Employees with age less than 30:', findEmployeeWithAgeLessThan30);
+
+        const findEmployeeWithAgeLessThanOrEqual30 = await repository.find(
+            { where: { age: LessThanOrEqual(30) } },
+            allowFiltering
+        );
+
     } catch (error) {
         console.error('Error:', error);
     } finally {

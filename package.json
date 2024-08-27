@@ -1,6 +1,6 @@
 {
     "name": "scyllorm",
-    "version": "0.0.7",
+    "version": "0.0.8",
     "description": "A TypeScript ORM for ScyllaDB",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
@@ -14,7 +14,8 @@
         "cassandra",
         "cql",
         "nosql",
-        "database"
+        "database",
+        "Scylla"
     ],
     "author": "Tiago Ferreira",
     "license": "GPLv3",

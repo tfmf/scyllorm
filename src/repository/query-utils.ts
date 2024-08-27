@@ -45,16 +45,30 @@ export function LessThanOrEqual<T extends SimpleConditionValue>(value: T): Condi
     };
 }
 
-export function MoreThan<T extends SimpleConditionValue>(value: T): Condition {
+export function GreaterThan<T extends SimpleConditionValue>(value: T): Condition {
     return {
         operator: '>',
         value,
     };
 }
 
-export function MoreThanOrEqual<T extends SimpleConditionValue>(value: T): Condition {
+export function GreaterThanOrEqual<T extends SimpleConditionValue>(value: T): Condition {
     return {
         operator: '>=',
         value,
     };
+}
+
+/**
+ * @deprecated Use `GreaterThan` instead.
+ */
+export function MoreThan<T extends SimpleConditionValue>(value: T): Condition {
+    return GreaterThan(value);
+}
+
+/**
+ * @deprecated Use `GreaterThanOrEqual` instead.
+ */
+export function MoreThanOrEqual<T extends SimpleConditionValue>(value: T): Condition {
+    return GreaterThanOrEqual(value);
 }
