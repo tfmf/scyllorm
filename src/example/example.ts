@@ -1,4 +1,16 @@
-import { Entity, PrimaryKeyColumn, Column, Index, BaseModel, DataSource } from 'scyllorm';
+import {
+    Entity,
+    PrimaryKeyColumn,
+    Column,
+    Index,
+    BaseModel,
+    DataSource,
+    In,
+    GreaterThan,
+    GreaterThanOrEqual,
+    LessThan,
+    LessThanOrEqual,
+} from 'scyllorm';
 
 @Entity('employees')
 @Index('employees_first_first_name_idx', 'first_name')
@@ -81,6 +93,35 @@ async function run() {
 
         const allEmployees = await repository.find();
         console.log(allEmployees);
+
+        // https://www.scylladb.com/2018/08/16/upcoming-enhancements-filtering-implementation/
+        const allowFiltering = true;
+        const findEmployeeWithAge30And25 = await repository.find({ where: { age: In([25, 30]) } }, allowFiltering);
+        console.log('Found Employees with age 30 and 25:', findEmployeeWithAge30And25);
+
+        const findEmployeeWithAgeAbove25 = await repository.find({ where: { age: GreaterThan(25) } }, allowFiltering);
+        console.log('Found Employees with age above 25:', findEmployeeWithAgeAbove25);
+
+        const findEmployeeWithAgeAboveOrEqualTo25 = await repository.find(
+            { where: { age: GreaterThanOrEqual(25) } },
+            allowFiltering
+        );
+        console.log('Found Employees with age equal to 25 or above:', findEmployeeWithAgeAboveOrEqualTo25);
+
+        const findEmployeeWithAgeLessThan30 = await repository.find({ where: { age: LessThan(30) } }, allowFiltering);
+        console.log('Found Employees with age less than 30:', findEmployeeWithAgeLessThan30);
+
+        const findEmployeeWithAgeLessThanOrEqual30 = await repository.find(
+            { where: { age: LessThanOrEqual(30) } },
+            allowFiltering
+        );
+        console.log(findEmployeeWithAgeLessThanOrEqual30);
+
+        const findEmployeeWithRawQuery = await repository.runRawQuery(
+            `SELECT * FROM employees WHERE id = :employee_id`,
+            { employee_id: 1 }
+        );
+        console.log(findEmployeeWithRawQuery);
     } catch (error) {
         console.error('Error:', error);
     } finally {

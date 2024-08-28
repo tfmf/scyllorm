@@ -203,7 +203,13 @@ Now, let’s put this thing to work:
             { where: { age: LessThanOrEqual(30) } },
             allowFiltering
         );
+        console.log(findEmployeeWithAgeLessThanOrEqual30);
 
+        const findEmployeeWithRawQuery = await repository.runRawQuery(
+            `SELECT * FROM employees WHERE id = :employee_id`,
+            { employee_id: 1 }
+        );
+        console.log(findEmployeeWithRawQuery);
     } catch (error) {
         console.error('Error:', error);
     } finally {
