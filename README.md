@@ -90,7 +90,7 @@ CREATE INDEX employees_first_last_name_idx ON employees (last_name);
 Now, let’s make a model:
 
 ```typescript
-import { BaseModel, Column, Index, PrimaryKeyColumn, Table } from 'scyllorm';
+import { BaseModel, Column, Entity, Index, PrimaryKeyColumn } from 'scyllorm';
 
 @Entity('employees')
 @Index('employees_first_first_name_idx', 'first_name')
@@ -184,6 +184,16 @@ Now, let’s put this thing to work:
         const allEmployees = await repository.find();
         console.log('All Employees:', allEmployees);
 
+        const limitedEmployees = await repository.find({ limit: 5 });
+        console.log('Limited Employees:', limitedEmployees);
+
+        const orderedEmployees = await repository.find({
+            where: { id: employeeId },
+            orderBy: { first_name: 'ASC' },
+            limit: 10,
+        });
+        console.log('Ordered Employees:', orderedEmployees);
+
         // https://www.scylladb.com/2018/08/16/upcoming-enhancements-filtering-implementation/
         const allowFiltering = true;
         const findEmployeeWithAge30And25 = await repository.find({ where: { age: In([25, 30]) } }, allowFiltering);
@@ -220,6 +230,11 @@ Now, let’s put this thing to work:
 }
 run();
 ```
+
+### Supported Column Types
+Scyllorm supports the following CQL column types:
+
+`ASCII` · `BIGINT` · `BLOB` · `BOOLEAN` · `COUNTER` · `DATE` · `DECIMAL` · `DOUBLE` · `DURATION` · `FLOAT` · `FROZEN` · `INET` · `INT` · `LIST` · `MAP` · `SET` · `SMALLINT` · `TINYINT` · `TIME` · `TIMESTAMP` · `TIMEUUID` · `TEXT` · `TUPLE` · `UUID` · `VARINT` · `VARCHAR`
 
 And that’s it! If you followed along and didn’t encounter any errors, you’re officially ready to start messing with ScyllaDB using TypeScript in Node.js. Congratulations! 🎉🌊🦑💻
 
