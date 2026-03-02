@@ -7,3 +7,4 @@ _example.ts
 _model.ts
 .DS_Store
 *.tgz
+/coverage

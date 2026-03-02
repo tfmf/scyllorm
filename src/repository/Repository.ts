@@ -3,9 +3,9 @@ import { BaseModel } from '../model/BaseModel';
 import { SimpleConditionValue, NestedConditions, FindOptions } from './query-utils';
 
 export class Repository<T extends BaseModel> {
-    protected entityClass: typeof BaseModel;
+    protected entityClass: (new () => T) & typeof BaseModel;
 
-    constructor(private dataSource: DataSource, entityClass: typeof BaseModel) {
+    constructor(private dataSource: DataSource, entityClass: (new () => T) & typeof BaseModel) {
         this.entityClass = entityClass;
     }
 
@@ -13,36 +13,24 @@ export class Repository<T extends BaseModel> {
 
     /**
      * Save the entity to the database.
+     * CQL INSERT is an upsert — no SELECT round-trip needed.
      * @param {T} entity - The entity to save.
-     * @returns {Promise<T | null>} The entity after saving, or null if saving fails.
+     * @returns {Promise<T>} The saved entity.
      */
     public async save(entity: T): Promise<T> {
-        // Get the primary keys and their values from the entity
-        const primaryKeyFields = this.entityClass.getPrimaryKeys();
-        const primaryKeyValues = primaryKeyFields.map(
-            (pk) => entity[pk.name as keyof T] as string | number | boolean | Buffer
-        );
-
         // Get all the keys and values to insert from the entity
         const columns = this.entityClass.columns ?? [];
         const keys = columns.map((col) => col.name);
         const placeholders = keys.map(() => '?').join(', ');
         const params = keys.map((key) => entity[key as keyof T] as string | number | boolean | Buffer);
 
-        // Construct the INSERT query
+        // Construct and execute the INSERT query
         const insertQuery = `INSERT INTO ${this.entityClass.getTableName()} (${keys.join(
             ', '
         )}) VALUES (${placeholders})`;
         await this.dataSource.executeQuery<null>(insertQuery, params, this.options);
 
-        // Construct the SELECT query to retrieve the newly saved entity
-        const fetchQuery =
-            `SELECT * FROM ${this.entityClass.getTableName()} WHERE ` +
-            primaryKeyFields.map((pk) => `${pk.name} = ?`).join(' AND ');
-
-        // Execute the SELECT query and return the entity
-        const fetchResults = await this.dataSource.executeQuery<T>(fetchQuery, primaryKeyValues, this.options);
-        return fetchResults.length > 0 ? this.mapRowToEntity(fetchResults[0]) : null;
+        return entity;
     }
 
     /**
@@ -57,17 +45,20 @@ export class Repository<T extends BaseModel> {
         let params: Array<string | number | Buffer | boolean> = [];
 
         if (options?.where) {
-            const { where, orderBy } = options;
-            const { conditionString, params: conditionParams } = this.buildConditionStringAndParams(where);
+            const { conditionString, params: conditionParams } = this.buildConditionStringAndParams(options.where);
             query += ` WHERE ${conditionString}`;
             params = conditionParams;
+        }
 
-            if (orderBy) {
-                const orderStrings = Object.entries(orderBy).map(([column, direction]) => {
-                    return `${column} ${direction}`;
-                });
-                query += ` ORDER BY ${orderStrings.join(', ')}`;
-            }
+        if (options?.orderBy) {
+            const orderStrings = Object.entries(options.orderBy).map(([column, direction]) => {
+                return `${column} ${direction}`;
+            });
+            query += ` ORDER BY ${orderStrings.join(', ')}`;
+        }
+
+        if (options?.limit !== undefined) {
+            query += ` LIMIT ${Math.floor(options.limit)}`;
         }
 
         if (allowFiltering) {
@@ -125,28 +116,16 @@ export class Repository<T extends BaseModel> {
 
     /**
      * Delete entities from the database based on the given conditions.
+     * CQL DELETE is idempotent — no existence check needed.
      * @param {Partial<T>} conditions The conditions to filter the entities.
-     * @returns {Promise<boolean>} True if the entities are deleted, false otherwise.
+     * @returns {Promise<void>}
      */
-    public async delete(conditions: Partial<T>): Promise<boolean> {
-        const existQuery = `SELECT * FROM ${this.entityClass.getTableName()} WHERE ${Object.keys(conditions)
+    public async delete(conditions: Partial<T>): Promise<void> {
+        const deleteQuery = `DELETE FROM ${this.entityClass.getTableName()} WHERE ${Object.keys(conditions)
             .map((key) => `${key} = ?`)
-            .join(' AND ')} LIMIT 1`;
-        const existParams = Object.values(conditions) as (string | number | boolean | Buffer)[];
-        const existResults = await this.dataSource.executeQuery<T>(existQuery, existParams, this.options);
-
-        if (existResults.length > 0) {
-            const deleteQuery = `DELETE FROM ${this.entityClass.getTableName()} WHERE ${Object.keys(conditions)
-                .map((key) => `${key} = ?`)
-                .join(' AND ')}`;
-            const deleteParams = Object.values(conditions) as (string | number | boolean | Buffer)[];
-            await this.dataSource.executeQuery<null>(deleteQuery, deleteParams, this.options);
-
-            const postDeleteResults = await this.dataSource.executeQuery<T>(existQuery, existParams, this.options);
-            return postDeleteResults.length === 0;
-        }
-
-        return false;
+            .join(' AND ')}`;
+        const deleteParams = Object.values(conditions) as (string | number | boolean | Buffer)[];
+        await this.dataSource.executeQuery<null>(deleteQuery, deleteParams, this.options);
     }
 
     /**
@@ -279,42 +258,45 @@ export class Repository<T extends BaseModel> {
     private transformValue(value: any, type: string): any {
         if (value === null || value === undefined) return value;
 
-        // Check if value is a BigDecimal-like object
-        if (value && typeof value === 'object' && '_scale' in value && '_intVal' in value) {
-            return Number(value._intVal.toString()) / Math.pow(10, value._scale);
-        }
-
         switch (type) {
             case 'ASCII':
-            case 'DURATION': // Consider custom handling
-            case 'INET': // Leave as is, can be treated as string
+            case 'DURATION':
+            case 'INET':
             case 'TEXT':
-            case 'TIME': // Consider custom handling
+            case 'TIME':
             case 'VARCHAR':
                 return value;
             case 'BIGINT':
             case 'COUNTER':
+            case 'VARINT':
+                // Preserve Long/BigInteger objects from the driver to avoid precision loss
+                return value;
             case 'INT':
             case 'SMALLINT':
             case 'TINYINT':
-            case 'VARINT':
-                return parseInt(value, 10); // Convert to JavaScript number
+                // Already numbers from the driver
+                return value;
             case 'BLOB':
-                return Buffer.from(value, 'base64'); // Convert to Buffer
+                // Already a Buffer from the driver
+                return value;
             case 'BOOLEAN':
-                return Boolean(value); // Convert to boolean
+                return Boolean(value);
             case 'DATE':
             case 'TIMESTAMP':
-                return new Date(value); // Convert to JavaScript Date
+                return new Date(value);
             case 'DECIMAL':
+                // Preserve BigDecimal objects from the driver to avoid precision loss
+                return value;
             case 'DOUBLE':
             case 'FLOAT':
-                return parseFloat(value); // Convert to JavaScript number
+                // Already numbers from the driver
+                return value;
             case 'TIMEUUID':
             case 'UUID':
-                return value.toString(); // Convert to string
+                return value.toString();
             default:
-                throw new Error(`Unsupported type: ${type}`);
+                // Pass through for collection types (LIST, SET, MAP, TUPLE, FROZEN) and any other types
+                return value;
         }
     }
     /* eslint-enable @typescript-eslint/no-explicit-any */

@@ -11,14 +11,19 @@ export type ColumnType =
     | 'DOUBLE'
     | 'DURATION'
     | 'FLOAT'
+    | 'FROZEN'
     | 'INET'
     | 'INT'
+    | 'LIST'
+    | 'MAP'
+    | 'SET'
     | 'SMALLINT'
     | 'TINYINT'
     | 'TIME'
     | 'TIMESTAMP'
     | 'TIMEUUID'
     | 'TEXT'
+    | 'TUPLE'
     | 'UUID'
     | 'VARINT'
     | 'VARCHAR';
@@ -38,8 +43,8 @@ export function Column(type: ColumnType, options?: ColumnOptions): PropertyDecor
     return function (target: object, propertyName: string | symbol) {
         const constructor = target.constructor as typeof BaseModel;
 
-        // Ensure the columns array is initialized
-        if (!constructor.columns) {
+        // Ensure the columns array is initialized on this class (not inherited from parent)
+        if (!constructor.hasOwnProperty('columns')) {
             constructor.columns = [];
         }
 

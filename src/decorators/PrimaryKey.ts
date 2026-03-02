@@ -19,13 +19,13 @@ export function PrimaryKeyColumn(type: PrimaryKeyColumnType, options?: PrimaryKe
     return function (target: object, propertyName: string | symbol) {
         const constructor = target.constructor as typeof BaseModel;
 
-        // Ensure the primaryKeys array is initialized
-        if (!constructor.primaryKeys) {
+        // Ensure the primaryKeys array is initialized on this class (not inherited from parent)
+        if (!constructor.hasOwnProperty('primaryKeys')) {
             constructor.primaryKeys = [];
         }
 
-        // Ensure the columns array is initialized
-        if (!constructor.columns) {
+        // Ensure the columns array is initialized on this class (not inherited from parent)
+        if (!constructor.hasOwnProperty('columns')) {
             constructor.columns = [];
         }
 

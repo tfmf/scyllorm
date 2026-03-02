@@ -19,8 +19,9 @@ export interface OrderByOption {
 }
 
 export interface FindOptions {
-    where: NestedConditions;
+    where?: NestedConditions;
     orderBy?: { [column: string]: 'ASC' | 'DESC' };
+    limit?: number;
 }
 
 // Utility functions for various operations

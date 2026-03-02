@@ -33,6 +33,7 @@ export class DataSource {
      */
     public async shutdown(): Promise<void> {
         await this.client.shutdown();
+        this.connected = false;
     }
 
     /**
@@ -48,7 +49,7 @@ export class DataSource {
         params: Array<string | number | Buffer | boolean>,
         options: QueryOptions = { prepare: true },
         retries: number = 0
-    ): Promise<T[] | null> {
+    ): Promise<T[]> {
         if (!this.connected) {
             console.warn('ScyllaDB is not connected. Attempting to reconnect...');
             await this.reconnect();
@@ -84,7 +85,7 @@ export class DataSource {
      * @param entityClass
      * @returns
      */
-    public getRepository<T extends BaseModel>(entityClass: typeof BaseModel): Repository<T> {
+    public getRepository<T extends BaseModel>(entityClass: (new () => T) & typeof BaseModel): Repository<T> {
         return new Repository<T>(this, entityClass);
     }
 

@@ -15,7 +15,8 @@ export function Index<T extends typeof BaseModel>(name: string, column: string):
     return function (constructor: unknown) {
         const baseConstructor = constructor as T;
 
-        if (!baseConstructor.indexes) {
+        // Ensure the indexes array is initialized on this class (not inherited from parent)
+        if (!baseConstructor.hasOwnProperty('indexes')) {
             baseConstructor.indexes = [];
         }
 
