@@ -1,4 +1,11 @@
 src/
 tsconfig.json
+vitest.config.ts
 *.log
 node_modules/
+coverage/
+.claude/
+CLAUDE.md
+.eslintrc.json
+.prettierrc.json
+.prettierignore

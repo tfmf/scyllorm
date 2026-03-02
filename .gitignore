@@ -8,3 +8,4 @@ _model.ts
 .DS_Store
 *.tgz
 /coverage
+CLAUDE.md
