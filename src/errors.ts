@@ -213,4 +213,35 @@ export class InvalidQueryError extends ScyllormError {
                 'Use runRawQuery() for CQL expressions, quoted identifiers or collection access.'
         );
     }
+
+    /**
+     * Builds the error for two declared columns that CQL cannot tell apart,
+     * because it folds unquoted identifiers to lowercase.
+     *
+     * @param {string} column The column being declared.
+     * @param {string} existing The column already declared under the same folded name.
+     * @param {string} entity The name of the entity class.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static ambiguousColumn(column: string, existing: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Columns ${quote(existing)} and ${quote(column)} on entity ${entity} are the same column to CQL, ` +
+                'which folds unquoted identifiers to lowercase. Rename one of them.'
+        );
+    }
+
+    /**
+     * Builds the error for a sort direction that is not `ASC` or `DESC`.
+     *
+     * @param {unknown} direction The rejected direction, as supplied.
+     * @param {string} column The column it was given for.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidDirection(direction: unknown, column: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Invalid sort direction ${quote(String(direction))} for column ${quote(column)} on entity ${entity}. ` +
+                "Use 'ASC' or 'DESC'."
+        );
+    }
 }
