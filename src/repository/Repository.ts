@@ -1,16 +1,86 @@
 import { QueryOptions } from 'cassandra-driver';
 import { DataSource } from '../data-source/DataSource';
 import { BaseModel } from '../model/BaseModel';
+import { InvalidQueryError, UnknownColumnError } from '../errors';
 import { SimpleConditionValue, NestedConditions, FindOptions, Page } from './query-utils';
+
+/**
+ * The property-to-column map for each entity class, built once on first use.
+ *
+ * Keyed on the constructor rather than held on the instance because
+ * `DataSource.getRepository()` allocates a fresh `Repository` on every call, and
+ * weakly so that an entity class going out of scope is not pinned by the cache.
+ */
+const columnMaps = new WeakMap<typeof BaseModel, ReadonlyMap<string, string>>();
+
+/**
+ * An unquoted CQL identifier: a letter, then letters, digits or underscores.
+ *
+ * The single source of truth for what this ORM will interpolate into a query.
+ * Anything else — a CQL expression, a quoted identifier, collection access — is
+ * `runRawQuery()` territory.
+ */
+const UNQUOTED_IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+
+/**
+ * Build the map from property name to the column name emitted in CQL.
+ *
+ * Validating here rather than per query means a malformed entity fails on its
+ * first use with a message about the declaration, not about the caller's input.
+ *
+ * @param {typeof BaseModel} entityClass The entity class to read metadata from.
+ * @returns {ReadonlyMap<string, string>} Property name to emitted column name.
+ */
+function buildColumnMap(entityClass: typeof BaseModel): ReadonlyMap<string, string> {
+    const map = new Map<string, string>();
+    const folded = new Map<string, string>();
+
+    for (const column of entityClass.columns ?? []) {
+        // Tier 3 will resolve an explicit `name` option here; today the two are the same
+        const emitted = column.name;
+
+        if (!UNQUOTED_IDENTIFIER.test(emitted)) {
+            throw InvalidQueryError.invalidIdentifier(emitted, entityClass.name);
+        }
+
+        // CQL folds unquoted identifiers, so two columns differing only by case are one column
+        const key = emitted.toLowerCase();
+        const clash = folded.get(key);
+
+        if (clash !== undefined && clash !== column.name) {
+            throw InvalidQueryError.ambiguousColumn(column.name, clash, entityClass.name);
+        }
+
+        folded.set(key, column.name);
+        map.set(column.name, emitted);
+    }
+
+    return map;
+}
 
 export class Repository<T extends BaseModel> {
     protected entityClass: (new () => T) & typeof BaseModel;
 
-    constructor(private dataSource: DataSource, entityClass: (new () => T) & typeof BaseModel) {
+    constructor(
+        private dataSource: DataSource,
+        entityClass: (new () => T) & typeof BaseModel
+    ) {
         this.entityClass = entityClass;
     }
 
     private options = { prepare: true };
+
+    /**
+     * List the column names accepted by `where`, `orderBy` and `delete`.
+     *
+     * The non-throwing counterpart to the validation the query builders apply:
+     * use it to filter untrusted input — a sort column from a query string, say —
+     * before handing it over, rather than catching {@link UnknownColumnError}.
+     * @returns {string[]} The names declared on the entity, in declaration order.
+     */
+    public getColumnNames(): string[] {
+        return [...this.getColumnMap().keys()];
+    }
 
     /**
      * Save the entity to the database.
@@ -110,7 +180,7 @@ export class Repository<T extends BaseModel> {
      * @returns {Promise<T | null>} The entity that match the conditions or null if not found.
      */
     public async findOneBy(conditions: Partial<T>, allowFiltering: boolean = false): Promise<T | null> {
-        const conditionStrings = Object.keys(conditions).map((key) => `${key} = ?`);
+        const conditionStrings = Object.keys(conditions).map((key) => `${this.assertColumn(key)} = ?`);
         let query = `SELECT * FROM ${this.entityClass.getTableName()} WHERE ${conditionStrings.join(' AND ')} LIMIT 1`;
         if (allowFiltering) {
             query += ' ALLOW FILTERING';
@@ -138,7 +208,7 @@ export class Repository<T extends BaseModel> {
      */
     public async delete(conditions: Partial<T>): Promise<void> {
         const deleteQuery = `DELETE FROM ${this.entityClass.getTableName()} WHERE ${Object.keys(conditions)
-            .map((key) => `${key} = ?`)
+            .map((key) => `${this.assertColumn(key)} = ?`)
             .join(' AND ')}`;
         const deleteParams = Object.values(conditions) as (string | number | boolean | Buffer)[];
         await this.dataSource.executeQuery<null>(deleteQuery, deleteParams, this.options);
@@ -201,7 +271,14 @@ export class Repository<T extends BaseModel> {
         }
 
         if (options?.orderBy) {
-            const orderStrings = Object.entries(options.orderBy).map(([column, direction]) => {
+            const orderStrings = Object.entries(options.orderBy).map(([key, direction]) => {
+                const column = this.assertColumn(key);
+
+                // Interpolated like the column, so it is whitelisted like the column
+                if (direction !== 'ASC' && direction !== 'DESC') {
+                    throw InvalidQueryError.invalidDirection(direction, key, this.entityClass.name);
+                }
+
                 return `${column} ${direction}`;
             });
             query += ` ORDER BY ${orderStrings.join(', ')}`;
@@ -232,6 +309,61 @@ export class Repository<T extends BaseModel> {
     }
 
     /**
+     * Resolve a caller-supplied key to the column name to emit, or throw.
+     *
+     * CQL cannot parameterize identifiers, so every name interpolated into a
+     * query passes through here and must appear in the entity's metadata. The
+     * whitelist is the security boundary: escaping is not an option, and a name
+     * that is not on the list never reaches the server.
+     *
+     * @param {string} key The property name supplied by the caller.
+     * @returns {string} The column name to emit in CQL.
+     */
+    protected assertColumn(key: string): string {
+        const column = this.getColumnMap().get(key);
+
+        if (column !== undefined) {
+            return column;
+        }
+
+        // Shape before membership: a name that could never be a column is a misuse of the
+        // API — a CQL expression or a quoted identifier — and wants different advice than a typo
+        if (!UNQUOTED_IDENTIFIER.test(key)) {
+            throw InvalidQueryError.invalidIdentifier(key, this.entityClass.name);
+        }
+
+        throw new UnknownColumnError({
+            column: key,
+            entity: this.entityClass.name,
+            table: this.entityClass.tableName,
+            knownColumns: this.getColumnNames(),
+        });
+    }
+
+    /**
+     * Get the entity's column map, building it on first use.
+     *
+     * Built lazily rather than in the constructor because `getRepository()` is a
+     * plain factory whose contract is total — a malformed entity should fail on
+     * the query that touches it, not on the call that returned the repository.
+     *
+     * @returns {ReadonlyMap<string, string>} Property name to emitted column name.
+     */
+    private getColumnMap(): ReadonlyMap<string, string> {
+        const cached = columnMaps.get(this.entityClass);
+
+        if (cached !== undefined) {
+            return cached;
+        }
+
+        // Not cached on failure, so the error surfaces on every offending query
+        const built = buildColumnMap(this.entityClass);
+        columnMaps.set(this.entityClass, built);
+
+        return built;
+    }
+
+    /**
      * Build a condition string and parameters for the given conditions.
      * @param {NestedConditions} conditions The conditions to build the string and parameters for.
      * @returns {{ conditionString: string, params: SimpleConditionValue[] }} The condition string and parameters.
@@ -244,12 +376,16 @@ export class Repository<T extends BaseModel> {
         const params: SimpleConditionValue[] = [];
 
         Object.entries(conditions).forEach(([key, value]) => {
+            // Resolved once, so every branch below emits a whitelisted name and a
+            // later branch cannot be added that forgets to validate
+            const column = this.assertColumn(key);
+
             if (typeof value === 'object' && 'operator' in value) {
                 switch (value.operator) {
                     case 'IN': {
                         if (Array.isArray(value.value)) {
                             const placeholders = value.value.map(() => '?').join(', ');
-                            conditionStrings.push(`${key} IN (${placeholders})`);
+                            conditionStrings.push(`${column} IN (${placeholders})`);
                             params.push(...(value.value as SimpleConditionValue[]));
                         } else {
                             throw new Error(`Expected an array for IN condition on key ${key}`);
@@ -267,7 +403,7 @@ export class Repository<T extends BaseModel> {
                             typeof value.value === 'boolean' ||
                             value.value instanceof Buffer
                         ) {
-                            conditionStrings.push(`${key} ${value.operator} ?`);
+                            conditionStrings.push(`${column} ${value.operator} ?`);
                             params.push(value.value);
                         } else {
                             throw new Error(
@@ -286,7 +422,7 @@ export class Repository<T extends BaseModel> {
                     typeof value === 'boolean' ||
                     value instanceof Buffer
                 ) {
-                    conditionStrings.push(`${key} = ?`);
+                    conditionStrings.push(`${column} = ?`);
                     params.push(value);
                 } else {
                     throw new Error(`Invalid value type for key ${key}: ${typeof value}`);
