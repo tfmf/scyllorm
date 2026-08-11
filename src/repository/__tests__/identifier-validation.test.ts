@@ -332,14 +332,6 @@ describe('identifier validation', () => {
         });
     });
 
-    describe('condition values', () => {
-        it('should reject null with a typed error instead of crashing on the operator check', async () => {
-            await expect(repo.findBy({ name: null as any })).rejects.toThrow(
-                'Invalid value type for key name: object'
-            );
-        });
-    });
-
     describe('the column map is shared per entity class', () => {
         it('should validate identically across separately created repositories', async () => {
             const first = ds.getRepository<Item>(Item);

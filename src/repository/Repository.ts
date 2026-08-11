@@ -59,6 +59,46 @@ function buildColumnMap(entityClass: typeof BaseModel): ReadonlyMap<string, stri
     return map;
 }
 
+/**
+ * Read a property only if the object owns it.
+ *
+ * Every read of a caller-supplied condition goes through here: `value.operator`
+ * resolves up the prototype chain, so a single assignment to `Object.prototype`
+ * would otherwise turn every plain object value into a condition of the
+ * attacker's choosing.
+ *
+ * @param {object} target The object to read from.
+ * @param {string} property The property name to read.
+ * @returns {unknown} The own value, or `undefined` if the object does not own it.
+ */
+function ownProperty(target: object, property: string): unknown {
+    return Object.prototype.hasOwnProperty.call(target, property)
+        ? (target as Record<string, unknown>)[property]
+        : undefined;
+}
+
+/**
+ * Whether a condition value is an operator object rather than a plain value.
+ *
+ * @param {unknown} value The condition value supplied by the caller.
+ * @returns {boolean} True if the value carries its own `operator`.
+ */
+function isCondition(value: unknown): value is object {
+    return typeof value === 'object' && value !== null && Object.prototype.hasOwnProperty.call(value, 'operator');
+}
+
+/**
+ * Whether a value can be bound to a `?` placeholder.
+ *
+ * @param {unknown} value The value to bind.
+ * @returns {boolean} True if the driver can bind it as-is.
+ */
+function isBindable(value: unknown): value is SimpleConditionValue {
+    return (
+        typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value instanceof Buffer
+    );
+}
+
 export class Repository<T extends BaseModel> {
     protected entityClass: (new () => T) & typeof BaseModel;
 
@@ -183,12 +223,11 @@ export class Repository<T extends BaseModel> {
      * @returns {Promise<T | null>} The entity that match the conditions or null if not found.
      */
     public async findOneBy(conditions: Partial<T>, allowFiltering: boolean = false): Promise<T | null> {
-        const conditionStrings = Object.keys(conditions).map((key) => `${this.assertColumn(key)} = ?`);
-        let query = `SELECT * FROM ${this.entityClass.getTableName()} WHERE ${conditionStrings.join(' AND ')} LIMIT 1`;
+        const { conditionString, params } = this.buildEqualityConditions(conditions, 'findOneBy() conditions');
+        let query = `SELECT * FROM ${this.entityClass.getTableName()} WHERE ${conditionString} LIMIT 1`;
         if (allowFiltering) {
             query += ' ALLOW FILTERING';
         }
-        const params = Object.values(conditions) as (string | number | boolean | Buffer)[];
         const results = await this.dataSource.executeQuery<T>(query, params, this.options);
         return results.length > 0 ? this.mapRowToEntity(results[0]) : null;
     }
@@ -210,11 +249,9 @@ export class Repository<T extends BaseModel> {
      * @returns {Promise<void>}
      */
     public async delete(conditions: Partial<T>): Promise<void> {
-        const deleteQuery = `DELETE FROM ${this.entityClass.getTableName()} WHERE ${Object.keys(conditions)
-            .map((key) => `${this.assertColumn(key)} = ?`)
-            .join(' AND ')}`;
-        const deleteParams = Object.values(conditions) as (string | number | boolean | Buffer)[];
-        await this.dataSource.executeQuery<null>(deleteQuery, deleteParams, this.options);
+        const { conditionString, params } = this.buildEqualityConditions(conditions, 'delete() conditions');
+        const deleteQuery = `DELETE FROM ${this.entityClass.getTableName()} WHERE ${conditionString}`;
+        await this.dataSource.executeQuery<null>(deleteQuery, params, this.options);
     }
 
     /**
@@ -274,7 +311,13 @@ export class Repository<T extends BaseModel> {
         }
 
         if (options?.orderBy) {
-            const orderStrings = Object.entries(options.orderBy).map(([key, direction]) => {
+            const orderEntries = Object.entries(options.orderBy);
+
+            if (orderEntries.length === 0) {
+                throw InvalidQueryError.emptyConditions('orderBy clause', this.entityClass.name);
+            }
+
+            const orderStrings = orderEntries.map(([key, direction]) => {
                 const column = this.assertColumn(key);
 
                 // Interpolated like the column, so it is whitelisted like the column
@@ -367,6 +410,48 @@ export class Repository<T extends BaseModel> {
     }
 
     /**
+     * Build the `col = ? AND …` fragment shared by `findOneBy()` and `delete()`.
+     *
+     * Values are bound as supplied rather than type-checked, so a driver type the
+     * ORM does not model — a `Date`, a UDT — still reaches the server.
+     *
+     * @param {object} conditions The equality conditions supplied by the caller.
+     * @param {string} clause How to name the conditions if they turn out to be empty.
+     * @returns {{ conditionString: string, params: SimpleConditionValue[] }} The fragment and its parameters.
+     */
+    private buildEqualityConditions(
+        conditions: object,
+        clause: string
+    ): { conditionString: string; params: SimpleConditionValue[] } {
+        const entity = this.entityClass.name;
+
+        // A single pass over the entries, because reading keys and values separately
+        // lets an enumerable getter that mutates the object bind a value to the wrong
+        // column, or emit a placeholder with no parameter behind it
+        const entries = Object.entries(conditions);
+
+        if (entries.length === 0) {
+            throw InvalidQueryError.emptyConditions(clause, entity);
+        }
+
+        const conditionStrings: string[] = [];
+        const params: SimpleConditionValue[] = [];
+
+        for (const [key, value] of entries) {
+            const column = this.assertColumn(key);
+
+            if (value === null || value === undefined) {
+                throw InvalidQueryError.nullCondition(key, entity);
+            }
+
+            conditionStrings.push(`${column} = ?`);
+            params.push(value as SimpleConditionValue);
+        }
+
+        return { conditionString: conditionStrings.join(' AND '), params };
+    }
+
+    /**
      * Build a condition string and parameters for the given conditions.
      * @param {NestedConditions} conditions The conditions to build the string and parameters for.
      * @returns {{ conditionString: string, params: SimpleConditionValue[] }} The condition string and parameters.
@@ -375,24 +460,54 @@ export class Repository<T extends BaseModel> {
         conditionString: string;
         params: SimpleConditionValue[];
     } {
+        const entity = this.entityClass.name;
+        const entries = Object.entries(conditions);
+
+        if (entries.length === 0) {
+            throw InvalidQueryError.emptyConditions('where clause', entity);
+        }
+
         const conditionStrings: string[] = [];
         const params: SimpleConditionValue[] = [];
 
-        Object.entries(conditions).forEach(([key, value]) => {
+        entries.forEach(([key, value]) => {
             // Resolved once, so every branch below emits a whitelisted name and a
             // later branch cannot be added that forgets to validate
             const column = this.assertColumn(key);
 
-            if (value !== null && typeof value === 'object' && 'operator' in value) {
-                switch (value.operator) {
+            if (value === null || value === undefined) {
+                throw InvalidQueryError.nullCondition(key, entity);
+            }
+
+            if (isCondition(value)) {
+                // Read through own properties only: with `Object.prototype.operator = 'IN'`
+                // set, an ordinary object value would otherwise be rerouted into the IN
+                // branch and bound to values the caller never passed
+                const operator = ownProperty(value, 'operator');
+                const operand = ownProperty(value, 'value');
+
+                switch (operator) {
                     case 'IN': {
-                        if (Array.isArray(value.value)) {
-                            const placeholders = value.value.map(() => '?').join(', ');
-                            conditionStrings.push(`${column} IN (${placeholders})`);
-                            params.push(...(value.value as SimpleConditionValue[]));
-                        } else {
-                            throw new Error(`Expected an array for IN condition on key ${key}`);
+                        if (!Array.isArray(operand)) {
+                            throw InvalidQueryError.invalidInValues(key, entity, operand);
                         }
+
+                        // Copied index by index rather than with `map` or `slice`: an Array
+                        // subclass can override either, and `slice` would hand back another
+                        // instance of that subclass. Deriving the placeholders from this copy
+                        // is what keeps their count equal to the number of bound parameters
+                        const operands: SimpleConditionValue[] = [];
+
+                        for (let index = 0; index < operand.length; index++) {
+                            operands.push(operand[index]);
+                        }
+
+                        if (operands.length === 0) {
+                            throw InvalidQueryError.emptyInValues(key, entity);
+                        }
+
+                        conditionStrings.push(`${column} IN (${new Array(operands.length).fill('?').join(', ')})`);
+                        params.push(...operands);
                         break;
                     }
                     case '<':
@@ -400,36 +515,24 @@ export class Repository<T extends BaseModel> {
                     case '>':
                     case '>=':
                     case '=': {
-                        if (
-                            typeof value.value === 'string' ||
-                            typeof value.value === 'number' ||
-                            typeof value.value === 'boolean' ||
-                            value.value instanceof Buffer
-                        ) {
-                            conditionStrings.push(`${column} ${value.operator} ?`);
-                            params.push(value.value);
-                        } else {
-                            throw new Error(
-                                `Invalid value type for operator ${value.operator} on key ${key}: ${typeof value.value}`
-                            );
+                        if (!isBindable(operand)) {
+                            throw InvalidQueryError.invalidConditionValue(key, entity, operator, operand);
                         }
+
+                        conditionStrings.push(`${column} ${operator} ?`);
+                        params.push(operand);
                         break;
                     }
                     default:
-                        throw new Error(`Unsupported operator: ${value.operator}`);
+                        throw InvalidQueryError.unsupportedOperator(operator, key, entity);
                 }
             } else {
-                if (
-                    typeof value === 'string' ||
-                    typeof value === 'number' ||
-                    typeof value === 'boolean' ||
-                    value instanceof Buffer
-                ) {
-                    conditionStrings.push(`${column} = ?`);
-                    params.push(value);
-                } else {
-                    throw new Error(`Invalid value type for key ${key}: ${typeof value}`);
+                if (!isBindable(value)) {
+                    throw InvalidQueryError.invalidConditionValue(key, entity, '=', value);
                 }
+
+                conditionStrings.push(`${column} = ?`);
+                params.push(value);
             }
         });
 
