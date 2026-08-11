@@ -244,4 +244,93 @@ export class InvalidQueryError extends ScyllormError {
                 "Use 'ASC' or 'DESC'."
         );
     }
+
+    /**
+     * Builds the error for a clause with no columns in it, which would be
+     * emitted as a dangling `WHERE`, `ORDER BY` or `IN ()`.
+     *
+     * @param {string} clause The clause that came up empty, named as the caller sees it.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static emptyConditions(clause: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Empty ${clause} on entity ${entity} would produce invalid CQL. Pass at least one column.`
+        );
+    }
+
+    /**
+     * Builds the error for a condition compared against null or undefined.
+     *
+     * @param {string} column The column the condition was given for.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static nullCondition(column: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Condition on column ${quote(column)} of entity ${entity} is null or undefined. ` +
+                'CQL has no null comparison; drop the condition instead.'
+        );
+    }
+
+    /**
+     * Builds the error for a condition value the driver cannot bind.
+     *
+     * @param {string} column The column the condition was given for.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @param {string} operator The operator the value was given for.
+     * @param {unknown} value The rejected value, reported by type only.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidConditionValue(column: string, entity: string, operator: string, value: unknown): InvalidQueryError {
+        return new InvalidQueryError(
+            `Invalid value of type ${typeof value} for operator ${operator} on column ${quote(column)} ` +
+                `of entity ${entity}. A condition value must be a string, number, boolean or Buffer.`
+        );
+    }
+
+    /**
+     * Builds the error for an `IN` condition whose values are not a list.
+     *
+     * @param {string} column The column the condition was given for.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @param {unknown} value The rejected value, reported by type only.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidInValues(column: string, entity: string, value: unknown): InvalidQueryError {
+        return new InvalidQueryError(
+            `IN condition on column ${quote(column)} of entity ${entity} expects an array of values, ` +
+                `received ${typeof value}. Build it with In([…]).`
+        );
+    }
+
+    /**
+     * Builds the error for an `IN` condition with no values, which CQL rejects
+     * outright rather than treating as a query that matches nothing.
+     *
+     * @param {string} column The column the condition was given for.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static emptyInValues(column: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `IN condition on column ${quote(column)} of entity ${entity} has no values. ` +
+                'An empty IN matches nothing; skip the query instead.'
+        );
+    }
+
+    /**
+     * Builds the error for an operator the query builder does not emit.
+     *
+     * @param {unknown} operator The rejected operator, as supplied.
+     * @param {string} column The column it was given for.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static unsupportedOperator(operator: unknown, column: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Unsupported operator ${quote(String(operator))} on column ${quote(column)} of entity ${entity}. ` +
+                'Supported operators are IN, =, <, <=, > and >=.'
+        );
+    }
 }
