@@ -311,6 +311,35 @@ describe('identifier validation', () => {
         });
     });
 
+    describe('save()', () => {
+        it('should reject a declared column that is not a legal identifier, just like find()', async () => {
+            const malformed = ds.getRepository(Malformed);
+            const entity = new Malformed();
+            entity.id = 'x';
+            entity._internal = 'y';
+
+            await expect(malformed.save(entity)).rejects.toThrow(InvalidQueryError);
+            expect(executeSpy).not.toHaveBeenCalled();
+        });
+
+        it('should reject two columns CQL cannot tell apart, just like find()', async () => {
+            const collisions = ds.getRepository(Collision);
+            const entity = new Collision();
+            entity.userId = 'x';
+            entity.userid = 'y';
+
+            await expect(collisions.save(entity)).rejects.toThrow(/same column to CQL/);
+        });
+    });
+
+    describe('condition values', () => {
+        it('should reject null with a typed error instead of crashing on the operator check', async () => {
+            await expect(repo.findBy({ name: null as any })).rejects.toThrow(
+                'Invalid value type for key name: object'
+            );
+        });
+    });
+
     describe('the column map is shared per entity class', () => {
         it('should validate identically across separately created repositories', async () => {
             const first = ds.getRepository<Item>(Item);

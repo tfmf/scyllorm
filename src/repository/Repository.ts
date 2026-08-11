@@ -47,7 +47,8 @@ function buildColumnMap(entityClass: typeof BaseModel): ReadonlyMap<string, stri
         const key = emitted.toLowerCase();
         const clash = folded.get(key);
 
-        if (clash !== undefined && clash !== column.name) {
+        // entityClass.columns is name-unique (upsertByName), so any match here is a different name
+        if (clash !== undefined) {
             throw InvalidQueryError.ambiguousColumn(column.name, clash, entityClass.name);
         }
 
@@ -89,14 +90,16 @@ export class Repository<T extends BaseModel> {
      * @returns {Promise<T>} The saved entity.
      */
     public async save(entity: T): Promise<T> {
-        // Get all the keys and values to insert from the entity
-        const columns = this.entityClass.columns ?? [];
-        const keys = columns.map((col) => col.name);
+        // Routed through the same whitelist as every other query builder, so a
+        // malformed entity fails here too instead of reaching the driver unchecked
+        const columnMap = this.getColumnMap();
+        const keys = [...columnMap.keys()];
+        const emitted = [...columnMap.values()];
         const placeholders = keys.map(() => '?').join(', ');
         const params = keys.map((key) => entity[key as keyof T] as string | number | boolean | Buffer);
 
         // Construct and execute the INSERT query
-        const insertQuery = `INSERT INTO ${this.entityClass.getTableName()} (${keys.join(
+        const insertQuery = `INSERT INTO ${this.entityClass.getTableName()} (${emitted.join(
             ', '
         )}) VALUES (${placeholders})`;
         await this.dataSource.executeQuery<null>(insertQuery, params, this.options);
@@ -380,7 +383,7 @@ export class Repository<T extends BaseModel> {
             // later branch cannot be added that forgets to validate
             const column = this.assertColumn(key);
 
-            if (typeof value === 'object' && 'operator' in value) {
+            if (value !== null && typeof value === 'object' && 'operator' in value) {
                 switch (value.operator) {
                     case 'IN': {
                         if (Array.isArray(value.value)) {
