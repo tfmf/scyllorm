@@ -1,4 +1,5 @@
 import { BaseModel } from '../model/BaseModel';
+import { ownMetadataArray, upsertByName } from './metadata-utils';
 
 export interface IndexDefinition {
     name: string;
@@ -15,12 +16,10 @@ export function Index<T extends typeof BaseModel>(name: string, column: string):
     return function (constructor: unknown) {
         const baseConstructor = constructor as T;
 
-        // Ensure the indexes array is initialized on this class (not inherited from parent)
-        if (!baseConstructor.hasOwnProperty('indexes')) {
-            baseConstructor.indexes = [];
-        }
+        // Get the indexes array this class owns, seeded from any inherited indexes
+        const indexes = ownMetadataArray<IndexDefinition>(baseConstructor, 'indexes');
 
-        baseConstructor.indexes.push({
+        upsertByName(indexes, {
             name,
             column,
         });
