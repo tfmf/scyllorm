@@ -29,6 +29,10 @@ export {
 // Exporting the BaseModel class that all models should extend
 export { BaseModel } from './model/BaseModel';
 
+// Export the error types, so callers can map bad input to a response instead of matching on messages
+export { ScyllormError, UnknownColumnError, InvalidQueryError } from './errors';
+export type { UnknownColumnDetails } from './errors';
+
 // Exporting the Column, Table, and PrimaryKey decorators for defining model structures
 export { Column } from './decorators/Column';
 export { Table } from './decorators/Table';
