@@ -1,7 +1,17 @@
-import { Client, QueryOptions, errors } from 'cassandra-driver';
+import { Client, QueryOptions, errors, types } from 'cassandra-driver';
 import { ConnectionOptions } from './ConnectionOptions';
 import { Repository } from '../repository';
 import { BaseModel } from '../model';
+
+/**
+ * A single page of a result set.
+ * `pageState` is only present when further pages are available — pass it back
+ * in the query options to fetch the next page.
+ */
+export interface PagedResult<T> {
+    rows: T[];
+    pageState?: string;
+}
 
 export class DataSource {
     private client: Client;
@@ -37,7 +47,13 @@ export class DataSource {
     }
 
     /**
-     * Execute a query against ScyllaDB.
+     * Execute a query against ScyllaDB, reading every page of the result set.
+     *
+     * ScyllaDB returns results one page at a time (`fetchSize`, 5000 rows by
+     * default), so this walks the pages until the result set is exhausted.
+     * For result sets too large to hold in memory, use `streamQuery()` or
+     * `executeQueryPage()` instead.
+     *
      * @param query The CQL query string.
      * @param params The parameters for the query.
      * @param options Query options, such as preparation settings.
@@ -50,13 +66,85 @@ export class DataSource {
         options: QueryOptions = { prepare: true },
         retries: number = 0
     ): Promise<T[]> {
+        const rows: T[] = [];
+        let pageState = options.pageState;
+
+        do {
+            const result = await this.runQuery(query, params, { ...options, pageState }, retries);
+            rows.push(...(result.rows as T[]));
+            pageState = result.pageState;
+        } while (pageState);
+
+        return rows;
+    }
+
+    /**
+     * Execute a query against ScyllaDB, returning a single page of results.
+     *
+     * The returned `pageState` is only set when further pages are available;
+     * pass it back in `options.pageState` to read the next page.
+     *
+     * @param query The CQL query string.
+     * @param params The parameters for the query.
+     * @param options Query options, such as page size (`fetchSize`) and `pageState`.
+     * @param retries The current retry count.
+     * @returns The page of rows and the cursor to the next page, if any.
+     */
+    public async executeQueryPage<T extends object>(
+        query: string,
+        params: Array<string | number | Buffer | boolean>,
+        options: QueryOptions = { prepare: true },
+        retries: number = 0
+    ): Promise<PagedResult<T>> {
+        const result = await this.runQuery(query, params, options, retries);
+        return { rows: result.rows as T[], pageState: result.pageState };
+    }
+
+    /**
+     * Execute a query against ScyllaDB, yielding rows one at a time.
+     *
+     * Pages are fetched lazily, so only a single page is ever held in memory —
+     * this is the way to scan a result set larger than the process can hold.
+     *
+     * @param query The CQL query string.
+     * @param params The parameters for the query.
+     * @param options Query options, such as page size (`fetchSize`).
+     * @returns An async iterator over the rows of the result set.
+     */
+    public async *streamQuery<T extends object>(
+        query: string,
+        params: Array<string | number | Buffer | boolean>,
+        options: QueryOptions = { prepare: true }
+    ): AsyncIterableIterator<T> {
+        let pageState = options.pageState;
+
+        do {
+            const result = await this.runQuery(query, params, { ...options, pageState });
+            yield* result.rows as T[];
+            pageState = result.pageState;
+        } while (pageState);
+    }
+
+    /**
+     * Execute a single query against ScyllaDB, retrying on connection errors.
+     * @param query The CQL query string.
+     * @param params The parameters for the query.
+     * @param options Query options, such as preparation settings.
+     * @param retries The current retry count.
+     * @returns The raw driver result set.
+     */
+    private async runQuery(
+        query: string,
+        params: Array<string | number | Buffer | boolean>,
+        options: QueryOptions,
+        retries: number = 0
+    ): Promise<types.ResultSet> {
         if (!this.connected) {
             console.warn('ScyllaDB is not connected. Attempting to reconnect...');
             await this.reconnect();
         }
         try {
-            const result = await this.client.execute(query, params, options);
-            return result.rows as T[];
+            return await this.client.execute(query, params, options);
         } catch (error) {
             if (
                 (error instanceof errors.NoHostAvailableError || error instanceof errors.DriverInternalError) &&
@@ -64,7 +152,7 @@ export class DataSource {
             ) {
                 retries++;
                 console.warn(`Connection lost. Retrying query attempt ${retries}/${this.MAX_RETRIES}.`);
-                return this.executeQuery(query, params, options, retries);
+                return this.runQuery(query, params, options, retries);
             } else {
                 console.error(`Query failed: ${error}`);
                 throw error;

@@ -1,5 +1,5 @@
 // Exporting the DataSource class for managing database connections
-export { DataSource } from './data-source/DataSource';
+export { DataSource, PagedResult } from './data-source/DataSource';
 
 // Exporting the Repository class for handling CRUD operations
 export { Repository } from './repository/Repository';
@@ -13,6 +13,17 @@ export {
     MoreThanOrEqual,
     GreaterThan,
     GreaterThanOrEqual,
+} from './repository/query-utils';
+
+// Export the query and result types used by the Repository API
+export {
+    Condition,
+    FindOptions,
+    NestedConditions,
+    OperatorType,
+    OrderByOption,
+    Page,
+    SimpleConditionValue,
 } from './repository/query-utils';
 
 // Exporting the BaseModel class that all models should extend

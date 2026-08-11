@@ -1,6 +1,7 @@
+import { QueryOptions } from 'cassandra-driver';
 import { DataSource } from '../data-source/DataSource';
 import { BaseModel } from '../model/BaseModel';
-import { SimpleConditionValue, NestedConditions, FindOptions } from './query-utils';
+import { SimpleConditionValue, NestedConditions, FindOptions, Page } from './query-utils';
 
 export class Repository<T extends BaseModel> {
     protected entityClass: (new () => T) & typeof BaseModel;
@@ -41,32 +42,47 @@ export class Repository<T extends BaseModel> {
      * @returns {Promise<T[]>} The entities that match the conditions.
      */
     public async find(options?: FindOptions, allowFiltering: boolean = false): Promise<T[]> {
-        let query = `SELECT * FROM ${this.entityClass.getTableName()}`;
-        let params: Array<string | number | Buffer | boolean> = [];
-
-        if (options?.where) {
-            const { conditionString, params: conditionParams } = this.buildConditionStringAndParams(options.where);
-            query += ` WHERE ${conditionString}`;
-            params = conditionParams;
-        }
-
-        if (options?.orderBy) {
-            const orderStrings = Object.entries(options.orderBy).map(([column, direction]) => {
-                return `${column} ${direction}`;
-            });
-            query += ` ORDER BY ${orderStrings.join(', ')}`;
-        }
-
-        if (options?.limit !== undefined) {
-            query += ` LIMIT ${Math.floor(options.limit)}`;
-        }
-
-        if (allowFiltering) {
-            query += ' ALLOW FILTERING';
-        }
-
+        const { query, params } = this.buildSelectQuery(options, allowFiltering);
         const results = await this.dataSource.executeQuery<T>(query, params, this.options);
         return results.map((row) => this.mapRowToEntity(row));
+    }
+
+    /**
+     * Find a single page of entities, for cursor-based pagination.
+     * Pass the returned `pageState` back in `options.pageState` to read the next page.
+     * @param {FindOptions} [options] The options including conditions, page size and cursor.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {Promise<Page<T>>} The page of entities and the cursor to the next page, if any.
+     */
+    public async findPaged(options?: FindOptions, allowFiltering: boolean = false): Promise<Page<T>> {
+        const { query, params } = this.buildSelectQuery(options, allowFiltering);
+        const { rows, pageState } = await this.dataSource.executeQueryPage<T>(
+            query,
+            params,
+            this.buildQueryOptions(options)
+        );
+
+        return {
+            rows: rows.map((row) => this.mapRowToEntity(row)),
+            pageState,
+            hasMore: pageState !== undefined,
+        };
+    }
+
+    /**
+     * Iterate over entities one at a time, fetching pages lazily.
+     * Only a single page is held in memory, so this is the way to scan a result
+     * set too large to load with `find()`.
+     * @param {FindOptions} [options] The options including conditions and page size.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {AsyncIterableIterator<T>} An async iterator over the matching entities.
+     */
+    public async *stream(options?: FindOptions, allowFiltering: boolean = false): AsyncIterableIterator<T> {
+        const { query, params } = this.buildSelectQuery(options, allowFiltering);
+
+        for await (const row of this.dataSource.streamQuery<T>(query, params, this.buildQueryOptions(options))) {
+            yield this.mapRowToEntity(row);
+        }
     }
 
     /**
@@ -163,6 +179,56 @@ export class Repository<T extends BaseModel> {
         } catch (error) {
             throw new Error(`Query failed: ${error.message}`);
         }
+    }
+
+    /**
+     * Build the SELECT query and parameters shared by `find()`, `findPaged()` and `stream()`.
+     * @param {FindOptions} [options] The options including conditions, ordering and limit.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {{ query: string, params: Array<SimpleConditionValue> }} The query and its parameters.
+     */
+    private buildSelectQuery(
+        options?: FindOptions,
+        allowFiltering: boolean = false
+    ): { query: string; params: Array<string | number | Buffer | boolean> } {
+        let query = `SELECT * FROM ${this.entityClass.getTableName()}`;
+        let params: Array<string | number | Buffer | boolean> = [];
+
+        if (options?.where) {
+            const { conditionString, params: conditionParams } = this.buildConditionStringAndParams(options.where);
+            query += ` WHERE ${conditionString}`;
+            params = conditionParams;
+        }
+
+        if (options?.orderBy) {
+            const orderStrings = Object.entries(options.orderBy).map(([column, direction]) => {
+                return `${column} ${direction}`;
+            });
+            query += ` ORDER BY ${orderStrings.join(', ')}`;
+        }
+
+        if (options?.limit !== undefined) {
+            query += ` LIMIT ${Math.floor(options.limit)}`;
+        }
+
+        if (allowFiltering) {
+            query += ' ALLOW FILTERING';
+        }
+
+        return { query, params };
+    }
+
+    /**
+     * Build the driver query options, carrying over any paging settings.
+     * @param {FindOptions} [options] The find options holding `fetchSize` and `pageState`.
+     * @returns {QueryOptions} The options to pass to the driver.
+     */
+    private buildQueryOptions(options?: FindOptions): QueryOptions {
+        return {
+            ...this.options,
+            ...(options?.fetchSize !== undefined && { fetchSize: options.fetchSize }),
+            ...(options?.pageState !== undefined && { pageState: options.pageState }),
+        };
     }
 
     /**

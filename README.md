@@ -231,6 +231,40 @@ Now, let’s put this thing to work:
 run();
 ```
 
+### 7. Handle Large Result Sets 📄
+
+ScyllaDB returns results one page at a time (5000 rows by default). `find()`
+reads every page for you, so it always returns the complete result set — but for
+a big table that means holding all of it in memory. When a query can match a lot
+of rows, reach for one of these instead.
+
+**Cursor-based pagination** — read one page at a time and hand the cursor back to
+your caller (an HTTP client, say):
+
+```typescript
+const firstPage = await repository.findPaged({ fetchSize: 100 });
+console.log(firstPage.rows, firstPage.hasMore);
+
+if (firstPage.hasMore) {
+    const nextPage = await repository.findPaged({ fetchSize: 100, pageState: firstPage.pageState });
+    console.log(nextPage.rows);
+}
+```
+
+`pageState` is `undefined` on the last page, which is what `hasMore` reflects.
+
+**Streaming** — iterate row by row, fetching pages lazily, so only a single page
+is ever in memory. This is the way to scan a table larger than your process:
+
+```typescript
+for await (const employee of repository.stream({ where: { city: 'New York' } }, true)) {
+    console.log(employee.first_name);
+}
+```
+
+Both accept the same options as `find()` — `where`, `orderBy`, `limit` and the
+`allowFiltering` flag — plus `fetchSize` to control the page size.
+
 ### Supported Column Types
 Scyllorm supports the following CQL column types:
 
