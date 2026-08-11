@@ -1,4 +1,5 @@
 import { BaseModel } from '../model/BaseModel';
+import { ColumnType, ColumnOptions } from './Column';
 import { ownMetadataArray, upsertByName } from './metadata-utils';
 
 export type PrimaryKeyColumnType = 'INT' | 'UUID' | 'TEXT';
@@ -28,8 +29,8 @@ export function PrimaryKeyColumn(type: PrimaryKeyColumnType, options?: PrimaryKe
         }>(constructor, 'primaryKeys');
         const columns = ownMetadataArray<{
             name: string;
-            type: PrimaryKeyColumnType;
-            options?: PrimaryKeyColumnOptions;
+            type: ColumnType;
+            options?: ColumnOptions;
         }>(constructor, 'columns');
 
         // Convert the property key to a string
@@ -45,7 +46,7 @@ export function PrimaryKeyColumn(type: PrimaryKeyColumnType, options?: PrimaryKe
         const columnDefinition = {
             name: columnName,
             type, // Use the type provided to the decorator
-        } as { name: string; type: PrimaryKeyColumnType; options?: PrimaryKeyColumnOptions };
+        } as { name: string; type: ColumnType; options?: ColumnOptions };
 
         // Conditionally add options if they are provided
         if (options) {
