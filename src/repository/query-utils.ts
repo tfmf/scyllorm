@@ -22,6 +22,18 @@ export interface FindOptions {
     where?: NestedConditions;
     orderBy?: { [column: string]: 'ASC' | 'DESC' };
     limit?: number;
+    /** Page size. Only used by `findPaged()` and `stream()`; ignored by `find()`. */
+    fetchSize?: number;
+    /** Cursor returned by a previous `findPaged()`. Only used by `findPaged()` and `stream()`. */
+    pageState?: string;
+}
+
+/** A single page of entities, as returned by `Repository.findPaged()`. */
+export interface Page<T> {
+    rows: T[];
+    /** Cursor for the next page; `undefined` once the result set is exhausted. */
+    pageState?: string;
+    hasMore: boolean;
 }
 
 // Utility functions for various operations
