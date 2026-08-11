@@ -2,6 +2,7 @@ import { Client, QueryOptions, errors, types } from 'cassandra-driver';
 import { ConnectionOptions } from './ConnectionOptions';
 import { Repository } from '../repository';
 import { BaseModel } from '../model';
+import { BindableValue } from '../repository/query-utils';
 
 /**
  * A single page of a result set.
@@ -62,7 +63,7 @@ export class DataSource {
      */
     public async executeQuery<T extends object>(
         query: string,
-        params: Array<string | number | Buffer | boolean>,
+        params: BindableValue[],
         options: QueryOptions = { prepare: true },
         retries: number = 0
     ): Promise<T[]> {
@@ -92,7 +93,7 @@ export class DataSource {
      */
     public async executeQueryPage<T extends object>(
         query: string,
-        params: Array<string | number | Buffer | boolean>,
+        params: BindableValue[],
         options: QueryOptions = { prepare: true },
         retries: number = 0
     ): Promise<PagedResult<T>> {
@@ -113,7 +114,7 @@ export class DataSource {
      */
     public async *streamQuery<T extends object>(
         query: string,
-        params: Array<string | number | Buffer | boolean>,
+        params: BindableValue[],
         options: QueryOptions = { prepare: true }
     ): AsyncIterableIterator<T> {
         let pageState = options.pageState;
@@ -135,7 +136,7 @@ export class DataSource {
      */
     private async runQuery(
         query: string,
-        params: Array<string | number | Buffer | boolean>,
+        params: BindableValue[],
         options: QueryOptions,
         retries: number = 0
     ): Promise<types.ResultSet> {
