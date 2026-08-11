@@ -9,3 +9,5 @@ CLAUDE.md
 .eslintrc.json
 .prettierrc.json
 .prettierignore
+tasks/
+.serena/
