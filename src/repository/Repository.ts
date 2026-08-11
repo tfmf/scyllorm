@@ -499,7 +499,13 @@ export class Repository<T extends BaseModel> {
                         const operands: SimpleConditionValue[] = [];
 
                         for (let index = 0; index < operand.length; index++) {
-                            operands.push(operand[index]);
+                            const element = operand[index];
+
+                            if (!isBindable(element)) {
+                                throw InvalidQueryError.invalidConditionValue(key, entity, 'IN', element);
+                            }
+
+                            operands.push(element);
                         }
 
                         if (operands.length === 0) {

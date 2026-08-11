@@ -208,6 +208,13 @@ describe('condition parsing', () => {
             expect(query.split('?').length - 1).toBe(params.length);
             expect(params).toEqual(['a', 'b', 'c', 1]);
         });
+
+        it('should reject a non-bindable element in the list', async () => {
+            await expect(repo.find({ where: { name: In([{ evil: true }, 'a']) } })).rejects.toThrow(
+                /Invalid value of type object for operator IN on column "name"/
+            );
+            expect(executeSpy).not.toHaveBeenCalled();
+        });
     });
 
     describe('operators and values', () => {
