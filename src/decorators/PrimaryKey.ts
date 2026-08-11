@@ -1,4 +1,6 @@
 import { BaseModel } from '../model/BaseModel';
+import { ColumnType, ColumnOptions } from './Column';
+import { ownMetadataArray, upsertByName } from './metadata-utils';
 
 export type PrimaryKeyColumnType = 'INT' | 'UUID' | 'TEXT';
 
@@ -19,15 +21,17 @@ export function PrimaryKeyColumn(type: PrimaryKeyColumnType, options?: PrimaryKe
     return function (target: object, propertyName: string | symbol) {
         const constructor = target.constructor as typeof BaseModel;
 
-        // Ensure the primaryKeys array is initialized on this class (not inherited from parent)
-        if (!constructor.hasOwnProperty('primaryKeys')) {
-            constructor.primaryKeys = [];
-        }
-
-        // Ensure the columns array is initialized on this class (not inherited from parent)
-        if (!constructor.hasOwnProperty('columns')) {
-            constructor.columns = [];
-        }
+        // Get the metadata arrays this class owns, seeded from any inherited definitions
+        const primaryKeys = ownMetadataArray<{
+            name: string;
+            type: PrimaryKeyColumnType;
+            options?: PrimaryKeyColumnOptions;
+        }>(constructor, 'primaryKeys');
+        const columns = ownMetadataArray<{
+            name: string;
+            type: ColumnType;
+            options?: ColumnOptions;
+        }>(constructor, 'columns');
 
         // Convert the property key to a string
         const columnName = propertyName.toString();
@@ -42,7 +46,7 @@ export function PrimaryKeyColumn(type: PrimaryKeyColumnType, options?: PrimaryKe
         const columnDefinition = {
             name: columnName,
             type, // Use the type provided to the decorator
-        } as { name: string; type: PrimaryKeyColumnType; options?: PrimaryKeyColumnOptions };
+        } as { name: string; type: ColumnType; options?: ColumnOptions };
 
         // Conditionally add options if they are provided
         if (options) {
@@ -51,9 +55,9 @@ export function PrimaryKeyColumn(type: PrimaryKeyColumnType, options?: PrimaryKe
         }
 
         // Add the primary key metadata to the primaryKeys array
-        constructor.primaryKeys.push(primaryKeyDefinition);
+        upsertByName(primaryKeys, primaryKeyDefinition);
 
         // Add the column metadata to the columns array
-        constructor.columns.push(columnDefinition);
+        upsertByName(columns, columnDefinition);
     };
 }
