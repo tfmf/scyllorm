@@ -1,12 +1,11 @@
-
-<p align="center">
-  <img src="assets/scyllorm-logo.png" alt="Scyllorm" width="300">
-</p>
-
-# Scyllorm 🦑
+# Scyllorm - Typescript ORM for ScyllaDB
 [![NPM](https://img.shields.io/npm/v/scyllorm)](https://www.npmjs.com/package/scyllorm)
 [![npm downloads](https://img.shields.io/npm/dt/scyllorm.svg)](https://www.npmjs.com/package/scyllorm)
 [![CI](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml/badge.svg)](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml)
+
+<p align="left">
+  <img src="assets/scyllorm-logo.png" alt="Scyllorm" width="300">
+</p>
 
 
 Welcome to **Scyllorm**—an experimental TypeScript ORM for ScyllaDB that’s so fresh, it’s practically still in beta diapers. Inspired by [TypeORM](https://github.com/typeorm/typeorm), we’ve set out to simplify database interactions in Node.js. By “simplify,” we mean it’s highly opinionated, so prepare to adopt our opinions, or go find another ORM. Features? Yeah, we’ve got some—just not all of them (yet). A few are stuck in the backlog, and others are on Scylla’s “no-can-do” list. 
