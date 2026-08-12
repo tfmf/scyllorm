@@ -1,7 +1,12 @@
 
+<p align="center">
+  <img src="assets/scyllorm-logo.png" alt="Scyllorm" width="300">
+</p>
+
 # Scyllorm 🦑
 [![NPM](https://img.shields.io/npm/v/scyllorm)](https://www.npmjs.com/package/scyllorm)
 [![npm downloads](https://img.shields.io/npm/dt/scyllorm.svg)](https://www.npmjs.com/package/scyllorm)
+[![CI](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml/badge.svg)](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml)
 
 
 Welcome to **Scyllorm**—an experimental TypeScript ORM for ScyllaDB that’s so fresh, it’s practically still in beta diapers. Inspired by [TypeORM](https://github.com/typeorm/typeorm), we’ve set out to simplify database interactions in Node.js. By “simplify,” we mean it’s highly opinionated, so prepare to adopt our opinions, or go find another ORM. Features? Yeah, we’ve got some—just not all of them (yet). A few are stuck in the backlog, and others are on Scylla’s “no-can-do” list. 
@@ -314,6 +319,32 @@ console.log(page.rows, page.hasMore, page.pageState);
 A missing `:name` throws `InvalidQueryError` before anything is sent; a query the
 server rejects throws `QueryFailedError`, with the driver's own error on `.cause`
 and the CQL on `.query`.
+
+### 9. Error Handling ⚠️
+
+Every error Scyllorm raises extends `ScyllormError`, so `instanceof ScyllormError`
+catches all of them — switch on `.code` rather than the message, since codes are
+stable and messages are not.
+
+```typescript
+import { ScyllormError, UnknownColumnError, InvalidQueryError, QueryFailedError } from 'scyllorm';
+
+try {
+    await repository.find({ where: { nope: 1 } });
+} catch (error) {
+    if (error instanceof UnknownColumnError) {
+        // A column not declared on the entity was used in a query — CQL can't
+        // parameterize identifiers, so unknown ones are rejected, not escaped.
+        console.error(error.column, error.entity, error.knownColumns);
+    } else if (error instanceof InvalidQueryError) {
+        // The query was malformed before it was ever sent to the server.
+    } else if (error instanceof QueryFailedError) {
+        // The server rejected the query; the driver's error is on error.cause.
+    } else if (error instanceof ScyllormError) {
+        // Any other Scyllorm-raised error.
+    }
+}
+```
 
 ### Supported Column Types
 Scyllorm supports the following CQL column types:
