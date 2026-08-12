@@ -1,8 +1,17 @@
 import { QueryOptions } from 'cassandra-driver';
-import { DataSource } from '../data-source/DataSource';
+import { DataSource, PagedResult } from '../data-source/DataSource';
 import { BaseModel } from '../model/BaseModel';
-import { InvalidQueryError, UnknownColumnError } from '../errors';
-import { SimpleConditionValue, NestedConditions, FindOptions, Page } from './query-utils';
+import { InvalidQueryError, QueryFailedError, UnknownColumnError } from '../errors';
+import { BoundQuery, bindNamedParameters } from './named-parameters';
+import {
+    SimpleConditionValue,
+    NestedConditions,
+    FindOptions,
+    Page,
+    RawQueryOptions,
+    RawQueryParams,
+    RawRow,
+} from './query-utils';
 
 /**
  * The property-to-column map for each entity class, built once on first use.
@@ -85,6 +94,16 @@ function ownProperty(target: object, property: string): unknown {
  */
 function isCondition(value: unknown): value is object {
     return typeof value === 'object' && value !== null && Object.prototype.hasOwnProperty.call(value, 'operator');
+}
+
+/**
+ * Accept the options bag and the positional `allowFiltering` it replaced.
+ *
+ * @param {RawQueryOptions | boolean} options The third argument as the caller passed it.
+ * @returns {RawQueryOptions} The options bag to work from.
+ */
+function resolveRawOptions(options: RawQueryOptions | boolean): RawQueryOptions {
+    return typeof options === 'boolean' ? { allowFiltering: options } : options;
 }
 
 /**
@@ -255,40 +274,170 @@ export class Repository<T extends BaseModel> {
     }
 
     /**
-     * Delete entities from the database based on the given conditions.
-     * @param {[key: string]: SimpleConditionValue} conditions The conditions to filter the entities.
-     * @param {boolean} allowFiltering Whether to allow filtering on the query.
-     * @returns {Promise<boolean>} True if the entities are deleted, false otherwise.
+     * Run a hand-written CQL query, binding `:name` placeholders as parameters.
+     *
+     * This is the deliberate escape hatch from identifier validation: the query
+     * string is sent as written, so it is the way to reach CQL this ORM does not
+     * model — `token(id)` ranges, quoted identifiers, collection access such as
+     * `metadata['key']`, functions and aggregates. **Nothing in `query` is
+     * checked against the entity's columns**, which is also the warning: never
+     * build it by concatenating caller-supplied input, or the injection the rest
+     * of the API prevents comes straight back. Values are safe — every `:name` is
+     * bound by the driver, never concatenated.
+     *
+     * Rows are mapped onto the entity by default, which only makes sense for a
+     * query shaped like the table. Pass `{ raw: true }` for anything else — an
+     * aggregate, a projection, another table — and the driver's rows come back
+     * untouched.
+     *
+     * The whole result set is read into memory. For a large scan — a token range,
+     * typically — use `streamRawQuery()` or `runRawQueryPaged()`.
+     *
+     * @param {string} query The CQL to run, with `:name` placeholders for values.
+     * @param {RawQueryParams} params A value for every `:name` in the query.
+     * @param {RawQueryOptions | boolean} [options] The query options, or `allowFiltering` on its own.
+     * @returns {Promise<T[]>} The rows the query returned, mapped to entities unless `raw` is set.
+     * @throws {InvalidQueryError} If the query names a parameter that was not supplied.
+     * @throws {QueryFailedError} If the driver rejects the query; its error is kept on `cause`.
      */
+    public async runRawQuery<R extends object = RawRow>(
+        query: string,
+        params: RawQueryParams,
+        options: RawQueryOptions & { raw: true }
+    ): Promise<R[]>;
+    public async runRawQuery(query: string, params: RawQueryParams, options?: RawQueryOptions | boolean): Promise<T[]>;
     public async runRawQuery(
         query: string,
-        params: { [key: string]: SimpleConditionValue },
-        allowFiltering: boolean = false
-    ): Promise<T[]> {
-        const paramKeys = Object.keys(params);
-        const paramValues: SimpleConditionValue[] = [];
+        params: RawQueryParams,
+        options: RawQueryOptions | boolean = {}
+    ): Promise<object[]> {
+        const resolved = resolveRawOptions(options);
+        const bound = this.bindRawQuery(query, params, resolved);
+        let rows: RawRow[];
 
-        // Replace the named parameters in the query with `?`
-        let formattedQuery = query.replace(/:(\w+)/g, (match, p1) => {
-            if (paramKeys.includes(p1)) {
-                paramValues.push(params[p1]);
-                return '?';
-            } else {
-                throw new Error(`Missing value for parameter: ${p1}`);
-            }
-        });
-
-        if (allowFiltering) {
-            formattedQuery += ' ALLOW FILTERING';
-        }
-
-        // Execute the query with the extracted values
+        // Only the driver call is wrapped: a failure in the mapping below is a bug
+        // in this ORM, and dressing it up as a query failure would hide that
         try {
-            const results = await this.dataSource.executeQuery<T>(formattedQuery, paramValues, this.options);
-            return results.map((row) => this.mapRowToEntity(row));
+            rows = await this.dataSource.executeQuery<RawRow>(
+                bound.query,
+                bound.params,
+                this.buildQueryOptions(resolved)
+            );
         } catch (error) {
-            throw new Error(`Query failed: ${error.message}`);
+            // Wrapped, not swallowed: the driver's error keeps its type and stack on `cause`
+            throw new QueryFailedError(bound.query, error);
         }
+
+        return resolved.raw ? rows : rows.map((row) => this.mapRowToEntity(row));
+    }
+
+    /**
+     * Run a hand-written CQL query, returning a single page of results.
+     *
+     * The paging counterpart to `runRawQuery()`, carrying the same warning: the
+     * query is not validated against the entity's columns. Pass the returned
+     * `pageState` back in `options.pageState` to read the next page.
+     *
+     * @param {string} query The CQL to run, with `:name` placeholders for values.
+     * @param {RawQueryParams} params A value for every `:name` in the query.
+     * @param {RawQueryOptions} [options] The query options, including `fetchSize` and `pageState`.
+     * @returns {Promise<Page<T>>} The page and the cursor to the next one, if any.
+     * @throws {InvalidQueryError} If the query names a parameter that was not supplied.
+     * @throws {QueryFailedError} If the driver rejects the query; its error is kept on `cause`.
+     */
+    public async runRawQueryPaged<R extends object = RawRow>(
+        query: string,
+        params: RawQueryParams,
+        options: RawQueryOptions & { raw: true }
+    ): Promise<Page<R>>;
+    public async runRawQueryPaged(query: string, params: RawQueryParams, options?: RawQueryOptions): Promise<Page<T>>;
+    public async runRawQueryPaged(
+        query: string,
+        params: RawQueryParams,
+        options: RawQueryOptions = {}
+    ): Promise<Page<object>> {
+        const bound = this.bindRawQuery(query, params, options);
+        let page: PagedResult<RawRow>;
+
+        try {
+            page = await this.dataSource.executeQueryPage<RawRow>(
+                bound.query,
+                bound.params,
+                this.buildQueryOptions(options)
+            );
+        } catch (error) {
+            throw new QueryFailedError(bound.query, error);
+        }
+
+        return {
+            rows: options.raw ? page.rows : page.rows.map((row) => this.mapRowToEntity(row)),
+            pageState: page.pageState,
+            hasMore: page.pageState !== undefined,
+        };
+    }
+
+    /**
+     * Run a hand-written CQL query, yielding rows one at a time.
+     *
+     * The streaming counterpart to `runRawQuery()`, carrying the same warning: the
+     * query is not validated against the entity's columns. Pages are fetched
+     * lazily, so this is the way to scan a result set too large to hold in memory
+     * — which is what a raw `token()` range is usually for.
+     *
+     * @param {string} query The CQL to run, with `:name` placeholders for values.
+     * @param {RawQueryParams} params A value for every `:name` in the query.
+     * @param {RawQueryOptions} [options] The query options, including `fetchSize`.
+     * @returns {AsyncIterableIterator<T>} An iterator over the rows the query returns.
+     * @throws {InvalidQueryError} If the query names a parameter that was not supplied.
+     * @throws {QueryFailedError} If the driver rejects the query; its error is kept on `cause`.
+     */
+    public streamRawQuery<R extends object = RawRow>(
+        query: string,
+        params: RawQueryParams,
+        options: RawQueryOptions & { raw: true }
+    ): AsyncIterableIterator<R>;
+    public streamRawQuery(query: string, params: RawQueryParams, options?: RawQueryOptions): AsyncIterableIterator<T>;
+    public async *streamRawQuery(
+        query: string,
+        params: RawQueryParams,
+        options: RawQueryOptions = {}
+    ): AsyncIterableIterator<object> {
+        const bound = this.bindRawQuery(query, params, options);
+        const rows = this.dataSource.streamQuery<RawRow>(bound.query, bound.params, this.buildQueryOptions(options));
+
+        // Stepped by hand rather than with `for await`, so that only what the driver
+        // throws is wrapped: inside a `for await` body, an exception thrown *into*
+        // the generator by its consumer would be caught and reported as a query failure
+        for (;;) {
+            let next: IteratorResult<RawRow>;
+
+            try {
+                next = await rows.next();
+            } catch (error) {
+                throw new QueryFailedError(bound.query, error);
+            }
+
+            if (next.done) {
+                return;
+            }
+
+            yield options.raw ? next.value : this.mapRowToEntity(next.value);
+        }
+    }
+
+    /**
+     * Substitute the named parameters and append `ALLOW FILTERING`, for the whole
+     * raw-query family.
+     *
+     * @param {string} query The CQL as the caller wrote it.
+     * @param {RawQueryParams} params The values for its `:name` placeholders.
+     * @param {RawQueryOptions} options The options the call was made with.
+     * @returns {BoundQuery} The query to send and the values to bind.
+     */
+    private bindRawQuery(query: string, params: RawQueryParams, options: RawQueryOptions): BoundQuery {
+        const bound = bindNamedParameters(query, params, this.entityClass.name);
+
+        return options.allowFiltering ? { query: `${bound.query} ALLOW FILTERING`, params: bound.params } : bound;
     }
 
     /**
@@ -343,10 +492,10 @@ export class Repository<T extends BaseModel> {
 
     /**
      * Build the driver query options, carrying over any paging settings.
-     * @param {FindOptions} [options] The find options holding `fetchSize` and `pageState`.
+     * @param {{ fetchSize?: number, pageState?: string }} [options] Whatever the caller passed, find or raw.
      * @returns {QueryOptions} The options to pass to the driver.
      */
-    private buildQueryOptions(options?: FindOptions): QueryOptions {
+    private buildQueryOptions(options?: { fetchSize?: number; pageState?: string }): QueryOptions {
         return {
             ...this.options,
             ...(options?.fetchSize !== undefined && { fetchSize: options.fetchSize }),

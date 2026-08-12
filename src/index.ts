@@ -17,12 +17,16 @@ export {
 
 // Export the query and result types used by the Repository API
 export {
+    BindableValue,
     Condition,
     FindOptions,
     NestedConditions,
     OperatorType,
     OrderByOption,
     Page,
+    RawQueryOptions,
+    RawQueryParams,
+    RawRow,
     SimpleConditionValue,
 } from './repository/query-utils';
 
@@ -30,7 +34,7 @@ export {
 export { BaseModel } from './model/BaseModel';
 
 // Export the error types, so callers can map bad input to a response instead of matching on messages
-export { ScyllormError, UnknownColumnError, InvalidQueryError } from './errors';
+export { ScyllormError, UnknownColumnError, InvalidQueryError, QueryFailedError } from './errors';
 export type { UnknownColumnDetails } from './errors';
 
 // Exporting the Column, Table, and PrimaryKey decorators for defining model structures

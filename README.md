@@ -265,6 +265,56 @@ for await (const employee of repository.stream({ where: { city: 'New York' } }, 
 Both accept the same options as `find()` — `where`, `orderBy`, `limit` and the
 `allowFiltering` flag — plus `fetchSize` to control the page size.
 
+### 8. Raw CQL, When the ORM Is in the Way 🔓
+
+Column names in `where`, `orderBy` and `delete` are checked against your entity —
+CQL cannot parameterize an identifier, so anything not declared with `@Column()`
+is rejected instead of concatenated. That rules out a few legitimate idioms:
+`token(id)` ranges, quoted identifiers, collection access like `metadata['key']`,
+functions and aggregates. `runRawQuery()` is the escape hatch for all of them:
+
+```typescript
+const rows = await repository.runRawQuery(`SELECT * FROM employees WHERE id = :employee_id`, { employee_id: 1 });
+```
+
+Values are bound, never concatenated — every `:name` becomes a `?`, and colons
+inside string literals, quoted identifiers and comments are left alone. The query
+string itself is sent as written, so **never build it from user input**; that is
+exactly the injection the rest of the API prevents.
+
+Rows are mapped onto the entity by default. For anything the entity cannot
+represent — an aggregate, a projection, another table — pass `raw: true` and the
+driver's rows come back untouched:
+
+```typescript
+const [{ count }] = await repository.runRawQuery<{ count: number }>(
+    `SELECT COUNT(*) AS count FROM employees WHERE city = :city`,
+    { city: 'New York' },
+    { raw: true, allowFiltering: true }
+);
+```
+
+`runRawQuery()` reads the whole result set into memory. For a large scan — which
+is what a `token()` range is usually for — the paging pair from §7 has raw
+counterparts taking the same options plus `fetchSize` and `pageState`:
+
+```typescript
+for await (const employee of repository.streamRawQuery(
+    `SELECT * FROM employees WHERE token(id) > token(:after)`,
+    { after: 1 },
+    { fetchSize: 500 }
+)) {
+    console.log(employee.first_name);
+}
+
+const page = await repository.runRawQueryPaged(`SELECT * FROM employees`, {}, { fetchSize: 100 });
+console.log(page.rows, page.hasMore, page.pageState);
+```
+
+A missing `:name` throws `InvalidQueryError` before anything is sent; a query the
+server rejects throws `QueryFailedError`, with the driver's own error on `.cause`
+and the CQL on `.query`.
+
 ### Supported Column Types
 Scyllorm supports the following CQL column types:
 

@@ -320,6 +320,21 @@ export class InvalidQueryError extends ScyllormError {
     }
 
     /**
+     * Builds the error for a named parameter a raw query references but the
+     * caller never supplied a value for.
+     *
+     * @param {string} parameter The parameter name, without its leading colon.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static missingParameter(parameter: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Missing value for parameter ${quote(parameter)} in a raw query on entity ${entity}. ` +
+                'Every :name in the query needs a matching key in the params object.'
+        );
+    }
+
+    /**
      * Builds the error for an operator the query builder does not emit.
      *
      * @param {unknown} operator The rejected operator, as supplied.
@@ -332,5 +347,33 @@ export class InvalidQueryError extends ScyllormError {
             `Unsupported operator ${quote(String(operator))} on column ${quote(column)} of entity ${entity}. ` +
                 'Supported operators are IN, =, <, <=, > and >=.'
         );
+    }
+}
+
+/**
+ * Thrown when the driver rejects a query the ORM was asked to run.
+ *
+ * Unlike the other two, this is not bad input caught locally — the statement
+ * reached the server and came back failing. The driver's own error is kept
+ * whole on `cause`, so its type, message and stack survive.
+ */
+export class QueryFailedError extends ScyllormError {
+    /**
+     * The error the driver threw.
+     *
+     * Declared as a field rather than passed to `super()`: `lib` is `ES2020`,
+     * where the `cause` constructor option is not typed.
+     */
+    readonly cause: unknown;
+
+    /** The CQL that failed, exactly as it was handed to the driver. */
+    readonly query: string;
+
+    constructor(query: string, cause: unknown) {
+        super('SCYLLORM_QUERY_FAILED', `Query failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+
+        this.name = 'QueryFailedError';
+        this.cause = cause;
+        this.query = query;
     }
 }
