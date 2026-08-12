@@ -18,7 +18,7 @@
         "Scylla"
     ],
     "author": "Tiago Ferreira",
-    "license": "GPLv3",
+    "license": "MIT",
     "scripts": {
         "build": "tsc",
         "test": "vitest run",

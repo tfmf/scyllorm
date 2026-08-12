@@ -2,6 +2,7 @@
 [![NPM](https://img.shields.io/npm/v/scyllorm)](https://www.npmjs.com/package/scyllorm)
 [![npm downloads](https://img.shields.io/npm/dt/scyllorm.svg)](https://www.npmjs.com/package/scyllorm)
 [![CI](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml/badge.svg)](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/tfmf/scyllorm/blob/main/LICENSE)
 
 <p align="left">
   <img src="assets/scyllorm-logo.png" alt="Scyllorm" width="300">
@@ -359,6 +360,6 @@ Found a bug? Want to add a feature?  We welcome all contributions! Just open a P
 You can find examples in Typescript and Javascript inside the folder [src/examples](https://github.com/tfmf/scyllorm/tree/main/src/example)
 
 ## License
-GNU General Public License v3.0
+MIT License
 
 
