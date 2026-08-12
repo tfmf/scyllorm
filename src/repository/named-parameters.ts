@@ -16,6 +16,13 @@ const NAME_START = /[A-Za-z_]/;
 const NAME_PART = /[A-Za-z0-9_]/;
 
 /**
+ * CQL's reserved literals. No parameter can legitimately be named one of these, so a
+ * colon immediately followed by one — as in the map literal `{'a':true}` — is the
+ * literal, not a placeholder.
+ */
+const RESERVED_LITERALS = new Set(['true', 'false', 'null']);
+
+/**
  * Copy a region the scanner must not look inside, and report where it ends.
  *
  * CQL closes a quoted region with the same character that opened it, and doubles
@@ -106,16 +113,18 @@ export function bindNamedParameters(query: string, params: RawQueryParams, entit
 
             const name = query.slice(index + 1, end);
 
-            // Own properties only: an inherited key is not a value the caller passed
-            if (!Object.prototype.hasOwnProperty.call(params, name)) {
+            if (RESERVED_LITERALS.has(name)) {
+                index = end;
+            } else if (!Object.prototype.hasOwnProperty.call(params, name)) {
+                // Own properties only: an inherited key is not a value the caller passed
                 throw InvalidQueryError.missingParameter(name, entity);
+            } else {
+                parts.push(query.slice(copiedFrom, index), '?');
+                values.push(params[name]);
+
+                index = end;
+                copiedFrom = end;
             }
-
-            parts.push(query.slice(copiedFrom, index), '?');
-            values.push(params[name]);
-
-            index = end;
-            copiedFrom = end;
         } else {
             index++;
         }

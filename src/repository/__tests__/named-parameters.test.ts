@@ -119,6 +119,22 @@ describe('bindNamedParameters', () => {
             expect(params).toEqual(['abc']);
         });
 
+        it('should leave a colon followed by true, false or null alone, as in a map literal', () => {
+            const { query, params } = bind("SET m = {'urgent':true, 'seen':false, 'note':null} WHERE id = :id", {
+                id: 'abc',
+            });
+
+            expect(query).toBe("SET m = {'urgent':true, 'seen':false, 'note':null} WHERE id = ?");
+            expect(params).toEqual(['abc']);
+        });
+
+        it('should still treat a name that merely starts with a reserved literal as a placeholder', () => {
+            const { query, params } = bind('WHERE a = :nullable', { nullable: 1 });
+
+            expect(query).toBe('WHERE a = ?');
+            expect(params).toEqual([1]);
+        });
+
         it('should leave a trailing colon alone', () => {
             expect(bind('WHERE a = :').query).toBe('WHERE a = :');
         });
