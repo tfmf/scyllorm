@@ -9,3 +9,4 @@ _model.ts
 *.tgz
 /coverage
 CLAUDE.md
+/tasks
