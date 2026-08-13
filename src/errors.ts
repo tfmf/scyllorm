@@ -246,6 +246,22 @@ export class InvalidQueryError extends ScyllormError {
     }
 
     /**
+     * Builds the error for a `LIMIT` the driver would reject as an `int` bind
+     * value, caught locally so the message names the caller's input rather than
+     * the driver's own type.
+     *
+     * @param {unknown} limit The rejected limit, as supplied.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidLimit(limit: unknown, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Invalid limit ${quote(String(limit))} on entity ${entity}. ` +
+                'A limit must be an integer from 1 to 2147483647, or a numeric string of one.'
+        );
+    }
+
+    /**
      * Builds the error for a clause with no columns in it, which would be
      * emitted as a dangling `WHERE`, `ORDER BY` or `IN ()`.
      *

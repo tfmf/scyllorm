@@ -30,6 +30,7 @@ export interface OrderByOption {
 export interface FindOptions {
     where?: NestedConditions;
     orderBy?: { [column: string]: 'ASC' | 'DESC' };
+    /** Must be an integer from 1 to 2147483647 at runtime; anything else throws `InvalidQueryError`. */
     limit?: number;
     /** Page size. Only used by `findPaged()` and `stream()`; ignored by `find()`. */
     fetchSize?: number;

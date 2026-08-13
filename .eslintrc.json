@@ -8,7 +8,8 @@
     "@typescript-eslint"
   ],
   "ignorePatterns": [
-    "*.d.ts"
+    "*.d.ts",
+    "coverage"
   ],
   "rules": {
     "@typescript-eslint/ban-types": "warn",

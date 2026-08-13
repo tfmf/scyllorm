@@ -32,6 +32,16 @@ const columnMaps = new WeakMap<typeof BaseModel, ReadonlyMap<string, string>>();
 const UNQUOTED_IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
 
 /**
+ * The largest value a `LIMIT` bind marker can carry.
+ *
+ * CQL types the marker as `int` — signed 32-bit — so the driver encodes it with
+ * `writeInt32BE` and anything larger throws a `RangeError` out of the buffer
+ * writer. JavaScript's safe-integer ceiling is four million times higher, so it
+ * is the wrong bound to check against.
+ */
+const MAX_CQL_INT = 2147483647;
+
+/**
  * Build the map from property name to the column name emitted in CQL.
  *
  * Validating here rather than per query means a malformed entity fails on its
@@ -172,6 +182,7 @@ export class Repository<T extends BaseModel> {
      * @param {FindOptions} [options] The options including conditions to filter the entities.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {Promise<T[]>} The entities that match the conditions.
+     * @throws {InvalidQueryError} If `limit` is not an integer from 1 to 2147483647.
      */
     public async find(options?: FindOptions, allowFiltering: boolean = false): Promise<T[]> {
         const { query, params } = this.buildSelectQuery(options, allowFiltering);
@@ -185,6 +196,7 @@ export class Repository<T extends BaseModel> {
      * @param {FindOptions} [options] The options including conditions, page size and cursor.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {Promise<Page<T>>} The page of entities and the cursor to the next page, if any.
+     * @throws {InvalidQueryError} If `limit` is not an integer from 1 to 2147483647.
      */
     public async findPaged(options?: FindOptions, allowFiltering: boolean = false): Promise<Page<T>> {
         const { query, params } = this.buildSelectQuery(options, allowFiltering);
@@ -208,6 +220,8 @@ export class Repository<T extends BaseModel> {
      * @param {FindOptions} [options] The options including conditions and page size.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {AsyncIterableIterator<T>} An async iterator over the matching entities.
+     * @throws {InvalidQueryError} If `limit` is not an integer from 1 to 2147483647. Thrown on the
+     *     first advance of the iterator, not on the call, as with any async generator.
      */
     public async *stream(options?: FindOptions, allowFiltering: boolean = false): AsyncIterableIterator<T> {
         const { query, params } = this.buildSelectQuery(options, allowFiltering);
@@ -480,7 +494,10 @@ export class Repository<T extends BaseModel> {
         }
 
         if (options?.limit !== undefined) {
-            query += ` LIMIT ${Math.floor(options.limit)}`;
+            const limit = this.assertLimit(options.limit);
+
+            query += ' LIMIT ?';
+            params.push(limit);
         }
 
         if (allowFiltering) {
@@ -533,6 +550,28 @@ export class Repository<T extends BaseModel> {
             table: this.entityClass.tableName,
             knownColumns: this.getColumnNames(),
         });
+    }
+
+    /**
+     * Resolve a caller-supplied `LIMIT` to the number to bind, or throw.
+     *
+     * The driver encodes the bind marker as an `int`, and rejects anything it
+     * cannot fit with a `RangeError` from its buffer writer — an error that
+     * names neither the entity nor the offending option. Checking here instead
+     * means a bad `limit` fails locally, against the range the wire type can
+     * actually carry, with a message about what the caller passed.
+     *
+     * @param {unknown} limit The limit supplied by the caller.
+     * @returns {number} The limit to bind.
+     */
+    private assertLimit(limit: unknown): number {
+        const coerced = typeof limit === 'string' ? Number(limit) : limit;
+
+        if (typeof coerced !== 'number' || !Number.isInteger(coerced) || coerced <= 0 || coerced > MAX_CQL_INT) {
+            throw InvalidQueryError.invalidLimit(limit, this.entityClass.name);
+        }
+
+        return coerced;
     }
 
     /**
