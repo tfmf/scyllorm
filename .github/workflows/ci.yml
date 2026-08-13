@@ -18,4 +18,36 @@ jobs:
 
       - run: npm run build
 
-      - run: npm test
+      # `shell: bash` gives this step `bash -eo pipefail`, so a threshold failure inside the
+      # pipe still fails the step — the default `bash -e` shell would let `tee`'s exit code
+      # (always 0) hide it. `NO_COLOR` strips the ANSI codes the text reporter would otherwise
+      # dump into the log and the job summary below.
+      - name: Test with coverage
+        shell: bash
+        env:
+          NO_COLOR: '1'
+        run: npm run test:coverage 2>&1 | tee "$RUNNER_TEMP/coverage-output.txt"
+
+      # Runs even on failure, so a threshold breach still reports its numbers. Bails quietly
+      # when the capture is missing, which is the case whenever an earlier step died first —
+      # a second red X there would only bury the real failure.
+      - name: Publish coverage to job summary
+        if: always()
+        shell: bash
+        run: |
+          [ -f "$RUNNER_TEMP/coverage-output.txt" ] || exit 0
+          {
+            echo '### Coverage'
+            echo
+            echo '```'
+            awk '/Coverage report from/{f=1} f{print} /^-+\|/{if(f && ++c==3) exit}' "$RUNNER_TEMP/coverage-output.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14

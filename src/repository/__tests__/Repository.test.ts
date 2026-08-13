@@ -103,7 +103,8 @@ describe('Repository', () => {
 
             expect(executeSpy).toHaveBeenCalledTimes(1);
             const query = executeSpy.mock.calls[0][0] as string;
-            expect(query).toBe('SELECT * FROM items LIMIT 10');
+            expect(query).toBe('SELECT * FROM items LIMIT ?');
+            expect(executeSpy.mock.calls[0][1]).toEqual([10]);
         });
 
         it('should place LIMIT after ORDER BY', async () => {
@@ -115,7 +116,8 @@ describe('Repository', () => {
 
             expect(executeSpy).toHaveBeenCalledTimes(1);
             const query = executeSpy.mock.calls[0][0] as string;
-            expect(query).toBe('SELECT * FROM items WHERE name = ? ORDER BY name ASC LIMIT 5');
+            expect(query).toBe('SELECT * FROM items WHERE name = ? ORDER BY name ASC LIMIT ?');
+            expect(executeSpy.mock.calls[0][1]).toEqual(['Widget', 5]);
         });
 
         it('should place LIMIT before ALLOW FILTERING', async () => {
@@ -123,7 +125,8 @@ describe('Repository', () => {
 
             expect(executeSpy).toHaveBeenCalledTimes(1);
             const query = executeSpy.mock.calls[0][0] as string;
-            expect(query).toBe('SELECT * FROM items LIMIT 20 ALLOW FILTERING');
+            expect(query).toBe('SELECT * FROM items LIMIT ? ALLOW FILTERING');
+            expect(executeSpy.mock.calls[0][1]).toEqual([20]);
         });
 
         it('should work without where clause (just limit)', async () => {
@@ -131,7 +134,8 @@ describe('Repository', () => {
 
             expect(executeSpy).toHaveBeenCalledTimes(1);
             const query = executeSpy.mock.calls[0][0] as string;
-            expect(query).toBe('SELECT * FROM items LIMIT 3');
+            expect(query).toBe('SELECT * FROM items LIMIT ?');
+            expect(executeSpy.mock.calls[0][1]).toEqual([3]);
         });
 
         it('should work without limit (backward compatible)', async () => {
@@ -171,8 +175,8 @@ describe('Repository', () => {
         it('should build the same query as find()', async () => {
             await repo.findPaged({ where: { name: 'Widget' }, orderBy: { name: 'ASC' }, limit: 5 });
 
-            expect(pageSpy.mock.calls[0][0]).toBe('SELECT * FROM items WHERE name = ? ORDER BY name ASC LIMIT 5');
-            expect(pageSpy.mock.calls[0][1]).toEqual(['Widget']);
+            expect(pageSpy.mock.calls[0][0]).toBe('SELECT * FROM items WHERE name = ? ORDER BY name ASC LIMIT ?');
+            expect(pageSpy.mock.calls[0][1]).toEqual(['Widget', 5]);
         });
 
         it('should pass fetchSize and pageState through to the driver options', async () => {

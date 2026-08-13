@@ -337,7 +337,9 @@ try {
         // parameterize identifiers, so unknown ones are rejected, not escaped.
         console.error(error.column, error.entity, error.knownColumns);
     } else if (error instanceof InvalidQueryError) {
-        // The query was malformed before it was ever sent to the server.
+        // The query was malformed before it was ever sent to the server —
+        // an unusable sort direction, an empty clause, or a `limit` that is
+        // not an integer from 1 to 2147483647.
     } else if (error instanceof QueryFailedError) {
         // The server rejected the query; the driver's error is on error.cause.
     } else if (error instanceof ScyllormError) {
@@ -352,6 +354,19 @@ Scyllorm supports the following CQL column types:
 `ASCII` · `BIGINT` · `BLOB` · `BOOLEAN` · `COUNTER` · `DATE` · `DECIMAL` · `DOUBLE` · `DURATION` · `FLOAT` · `FROZEN` · `INET` · `INT` · `LIST` · `MAP` · `SET` · `SMALLINT` · `TINYINT` · `TIME` · `TIMESTAMP` · `TIMEUUID` · `TEXT` · `TUPLE` · `UUID` · `VARINT` · `VARCHAR`
 
 And that’s it! If you followed along and didn’t encounter any errors, you’re officially ready to start messing with ScyllaDB using TypeScript in Node.js. Congratulations! 🎉🌊🦑💻
+
+## Testing 🧪
+The suite runs on [Vitest](https://vitest.dev/) — no live ScyllaDB required, the driver is mocked.
+
+```bash
+npm test              # run the suite once
+npm run test:watch    # re-run on file changes
+npm run test:coverage # run with coverage, report written to coverage/
+```
+
+Open `coverage/index.html` for a browsable, file-by-file breakdown. CI runs
+`test:coverage` on every PR and fails the build if coverage drops below the
+thresholds configured in `vitest.config.ts`.
 
 ## Contributing
 Found a bug? Want to add a feature?  We welcome all contributions! Just open a PR and we'll review it as fas as humanly possible (or not)
