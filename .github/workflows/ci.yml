@@ -28,6 +28,11 @@ jobs:
           NO_COLOR: '1'
         run: npm run test:coverage 2>&1 | tee "$RUNNER_TEMP/coverage-output.txt"
 
+      # A badge nobody updates is a badge that lies, so the README's number is verified
+      # against the run that just happened rather than trusted.
+      - name: Check the README coverage badge is current
+        run: npm run coverage:badge:check
+
       # Runs even on failure, so a threshold breach still reports its numbers. Bails quietly
       # when the capture is missing, which is the case whenever an earlier step died first —
       # a second red X there would only bury the real failure.

@@ -24,6 +24,8 @@
         "test": "vitest run",
         "test:watch": "vitest",
         "test:coverage": "vitest run --coverage",
+        "coverage:badge": "node scripts/coverage-badge.mjs --write",
+        "coverage:badge:check": "node scripts/coverage-badge.mjs",
         "prepare": "npm run build"
     },
     "dependencies": {
