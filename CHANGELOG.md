@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes increment the major version.
 
-## [0.4.0] - 2026-08-23
+## [0.5.0] - 2026-08-23
 
 ### Added
 
@@ -47,6 +47,14 @@ bad input throws locally instead of a round trip away.
 - **`FindOptions.select`** — column projection for `find()`, `findPaged()` and `stream()`,
   whitelisted like every other identifier; unselected properties keep their constructor
   defaults. An empty array throws `InvalidQueryError`.
+## [0.4.0] - 2026-08-23
+
+### Added
+
+Tier 1 of the roadmap, complete. All additions are validated the same way as the existing
+query builders: column names are whitelisted against the entity's metadata, every value is
+bound to a `?` placeholder, and bad input throws locally instead of a round trip away.
+
 - **`update(conditions, values)`** — partial `UPDATE ... SET` without loading the entity
   first. `null` deletes a cell (tombstone); `undefined` throws `InvalidQueryError`, since in
   JavaScript it is almost always an accident. Assigning a primary key or COUNTER column
