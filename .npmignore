@@ -12,4 +12,4 @@ CLAUDE.md
 .prettierignore
 tasks/
 .serena/
-assets/
+assets/eslint.config.mjs
