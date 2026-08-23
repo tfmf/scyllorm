@@ -210,7 +210,7 @@ export class Repository<T extends BaseModel> {
         await entity.beforeSave?.();
 
         const { query, params } = this.buildInsertStatement(entity, options);
-        await this.dataSource.executeQuery<null>(query, params, this.options);
+        await this.dataSource.executeQuery<never>(query, params, this.options);
 
         await entity.afterSave?.();
 
@@ -415,7 +415,7 @@ export class Repository<T extends BaseModel> {
         await this.entityClass.beforeDelete?.(hookConditions);
 
         const { query, params } = this.buildDeleteStatement(conditions);
-        await this.dataSource.executeQuery<null>(query, params, this.options);
+        await this.dataSource.executeQuery<never>(query, params, this.options);
 
         await this.entityClass.afterDelete?.(hookConditions);
     }
@@ -501,7 +501,7 @@ export class Repository<T extends BaseModel> {
         await this.entityClass.beforeUpdate?.(hookConditions, hookValues);
 
         const { query, params } = this.buildUpdateStatement(conditions, values, options);
-        await this.dataSource.executeQuery<null>(query, params, this.options);
+        await this.dataSource.executeQuery<never>(query, params, this.options);
 
         await this.entityClass.afterUpdate?.(hookConditions, hookValues);
     }
@@ -806,7 +806,7 @@ export class Repository<T extends BaseModel> {
      * @returns {Promise<void>}
      */
     public async clear(): Promise<void> {
-        await this.dataSource.executeQuery<null>(`TRUNCATE ${this.entityClass.getTableName()}`, [], this.options);
+        await this.dataSource.executeQuery<never>(`TRUNCATE ${this.entityClass.getTableName()}`, [], this.options);
     }
 
     /**
@@ -842,7 +842,7 @@ export class Repository<T extends BaseModel> {
         const { conditionString, params } = this.buildEqualityConditions(conditions, clause);
         const query = `UPDATE ${this.entityClass.getTableName()} SET ${column} = ${column} ${sign} ? WHERE ${conditionString}`;
 
-        await this.dataSource.executeQuery<null>(query, [by, ...params], this.options);
+        await this.dataSource.executeQuery<never>(query, [by, ...params], this.options);
     }
 
     /**
