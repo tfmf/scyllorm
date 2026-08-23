@@ -1,9 +1,10 @@
 import { QueryOptions } from 'cassandra-driver';
 import { DataSource, PagedResult } from '../data-source/DataSource';
 import { BaseModel } from '../model/BaseModel';
-import { InvalidQueryError, QueryFailedError, UnknownColumnError } from '../errors';
+import { EntityNotFoundError, InvalidQueryError, QueryFailedError, UnknownColumnError } from '../errors';
 import { BoundQuery, bindNamedParameters } from './named-parameters';
 import {
+    BindableValue,
     SimpleConditionValue,
     NestedConditions,
     FindOptions,
@@ -126,6 +127,27 @@ function isBindable(value: unknown): value is SimpleConditionValue {
     return (
         typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value instanceof Buffer
     );
+}
+
+/**
+ * Read the value out of a `SELECT COUNT(*)` result set.
+ *
+ * The driver returns the count as a `Long`, which converts through its decimal
+ * string — `Number()` alone would go through `valueOf` and produce `NaN`. A
+ * count beyond `Number.MAX_SAFE_INTEGER` would lose precision, which no real
+ * table reaches.
+ *
+ * @param {RawRow[]} rows The rows of the COUNT query.
+ * @returns {number} The count, or 0 if the server returned no row.
+ */
+function extractCount(rows: RawRow[]): number {
+    const raw = rows[0]?.count;
+
+    if (raw === null || raw === undefined) {
+        return 0;
+    }
+
+    return typeof raw === 'number' ? raw : Number(String(raw));
 }
 
 export class Repository<T extends BaseModel> {
@@ -285,6 +307,286 @@ export class Repository<T extends BaseModel> {
         const { conditionString, params } = this.buildEqualityConditions(conditions, 'delete() conditions');
         const deleteQuery = `DELETE FROM ${this.entityClass.getTableName()} WHERE ${conditionString}`;
         await this.dataSource.executeQuery<null>(deleteQuery, params, this.options);
+    }
+
+    /**
+     * Update columns on the rows matching the conditions, without reading them first.
+     *
+     * `UPDATE` in CQL is an upsert like `INSERT`: a primary key that matches no
+     * row creates it. Pass `null` to delete a cell; `undefined` throws, because
+     * in JavaScript it is far more often a bug than a decision.
+     *
+     * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
+     * @param {Partial<T>} values The columns to set and the values to set them to.
+     * @returns {Promise<void>}
+     * @throws {InvalidQueryError} If `values` is empty, assigns a primary key or COUNTER column,
+     *     or carries an undefined value.
+     * @throws {UnknownColumnError} If a column is not declared on the entity.
+     */
+    public async update(conditions: Partial<T>, values: Partial<T>): Promise<void> {
+        const entity = this.entityClass.name;
+
+        // Single pass over the entries, same as the condition builders: reading keys
+        // and values separately would let an enumerable getter reorder the bindings
+        const entries = Object.entries(values);
+
+        if (entries.length === 0) {
+            throw InvalidQueryError.emptyConditions('update() values', entity);
+        }
+
+        const primaryKeys = new Set(this.entityClass.getPrimaryKeys().map((pk) => pk.name));
+        const counters = this.counterColumns();
+        const assignments: string[] = [];
+        const params: BindableValue[] = [];
+
+        for (const [key, value] of entries) {
+            const column = this.assertColumn(key);
+
+            // Both rejected locally: the server would refuse them a round trip away,
+            // with a message about CQL rather than about the caller's arguments
+            if (primaryKeys.has(key)) {
+                throw InvalidQueryError.primaryKeyAssignment(key, entity);
+            }
+
+            if (counters.has(key)) {
+                throw InvalidQueryError.counterAssignment(key, entity);
+            }
+
+            if (value === undefined) {
+                throw InvalidQueryError.undefinedAssignment(key, entity);
+            }
+
+            assignments.push(`${column} = ?`);
+            params.push(value);
+        }
+
+        const { conditionString, params: whereParams } = this.buildEqualityConditions(
+            conditions,
+            'update() conditions'
+        );
+        const query = `UPDATE ${this.entityClass.getTableName()} SET ${assignments.join(
+            ', '
+        )} WHERE ${conditionString}`;
+
+        await this.dataSource.executeQuery<null>(query, [...params, ...whereParams], this.options);
+    }
+
+    /**
+     * Add `by` to a COUNTER column on the rows matching the conditions.
+     *
+     * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
+     * @param {string} column The COUNTER column to move.
+     * @param {number} [by=1] How far to move it; a safe integer, negative to subtract.
+     * @returns {Promise<void>}
+     * @throws {InvalidQueryError} If the column is not a COUNTER or `by` is not a safe integer.
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     */
+    public async increment(conditions: Partial<T>, column: keyof T & string, by: number = 1): Promise<void> {
+        await this.moveCounter(conditions, column, by, '+', 'increment() conditions');
+    }
+
+    /**
+     * Subtract `by` from a COUNTER column on the rows matching the conditions.
+     *
+     * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
+     * @param {string} column The COUNTER column to move.
+     * @param {number} [by=1] How far to move it; a safe integer, negative to add.
+     * @returns {Promise<void>}
+     * @throws {InvalidQueryError} If the column is not a COUNTER or `by` is not a safe integer.
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     */
+    public async decrement(conditions: Partial<T>, column: keyof T & string, by: number = 1): Promise<void> {
+        await this.moveCounter(conditions, column, by, '-', 'decrement() conditions');
+    }
+
+    /**
+     * Count the rows in the table, optionally narrowed by conditions.
+     *
+     * A full-table count is a scan on the server side — on a large table,
+     * prefer a dedicated COUNTER kept with `increment()`.
+     *
+     * @param {NestedConditions} [conditions] The conditions to narrow the count, if any.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {Promise<number>} How many rows matched.
+     */
+    public async count(conditions?: NestedConditions, allowFiltering: boolean = false): Promise<number> {
+        if (conditions !== undefined) {
+            return this.countBy(conditions, allowFiltering);
+        }
+
+        const query = `SELECT COUNT(*) FROM ${this.entityClass.getTableName()}`;
+        const rows = await this.dataSource.executeQuery<RawRow>(query, [], this.options);
+
+        return extractCount(rows);
+    }
+
+    /**
+     * Count the rows matching the conditions.
+     *
+     * @param {NestedConditions} conditions The conditions to count by.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {Promise<number>} How many rows matched.
+     */
+    public async countBy(conditions: NestedConditions, allowFiltering: boolean = false): Promise<number> {
+        const { conditionString, params } = this.buildConditionStringAndParams(conditions);
+        let query = `SELECT COUNT(*) FROM ${this.entityClass.getTableName()} WHERE ${conditionString}`;
+
+        if (allowFiltering) {
+            query += ' ALLOW FILTERING';
+        }
+
+        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.options);
+
+        return extractCount(rows);
+    }
+
+    /**
+     * Whether the table has any rows at all.
+     *
+     * @returns {Promise<boolean>} True if at least one row exists.
+     */
+    public async exists(): Promise<boolean> {
+        const query = `SELECT * FROM ${this.entityClass.getTableName()} LIMIT 1`;
+        const rows = await this.dataSource.executeQuery<RawRow>(query, [], this.options);
+
+        return rows.length > 0;
+    }
+
+    /**
+     * Whether any row matches the conditions.
+     *
+     * Cheaper than `countBy(...) > 0`: the server stops at the first match
+     * instead of scanning everything that qualifies.
+     *
+     * @param {NestedConditions} conditions The conditions to test.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {Promise<boolean>} True if at least one row matched.
+     */
+    public async existsBy(conditions: NestedConditions, allowFiltering: boolean = false): Promise<boolean> {
+        const { conditionString, params } = this.buildConditionStringAndParams(conditions);
+        let query = `SELECT * FROM ${this.entityClass.getTableName()} WHERE ${conditionString} LIMIT 1`;
+
+        if (allowFiltering) {
+            query += ' ALLOW FILTERING';
+        }
+
+        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.options);
+
+        return rows.length > 0;
+    }
+
+    /**
+     * Instantiate an entity from a plain object, without saving it.
+     *
+     * Only declared columns are copied — an extra key on the input (a request
+     * body, typically) is ignored rather than mass-assigned. Defaults from the
+     * column options apply first, so the input wins where both provide a value;
+     * an `undefined` value is skipped so it cannot erase a default.
+     *
+     * @param {Partial<T>} [plain] The values to assign onto the fresh entity.
+     * @returns {T} The entity, ready for `save()`.
+     */
+    public create(plain?: Partial<T>): T {
+        const entity = new this.entityClass() as T;
+
+        if (plain === undefined || plain === null) {
+            return entity;
+        }
+
+        for (const key of this.getColumnMap().keys()) {
+            // Own properties only, so a polluted Object.prototype cannot inject values
+            if (!Object.prototype.hasOwnProperty.call(plain, key)) {
+                continue;
+            }
+
+            const value = (plain as Record<string, unknown>)[key];
+
+            if (value !== undefined) {
+                (entity as Record<string, unknown>)[key] = value;
+            }
+        }
+
+        return entity;
+    }
+
+    /**
+     * Find one entity or throw, for the call sites where absence is a bug.
+     *
+     * @param {Partial<T>} conditions The equality conditions to look up by.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {Promise<T>} The entity that matched.
+     * @throws {EntityNotFoundError} If no row matched. Carries the condition columns, never the values.
+     */
+    public async findOneOrFail(conditions: Partial<T>, allowFiltering: boolean = false): Promise<T> {
+        const found = await this.findOneBy(conditions, allowFiltering);
+
+        if (found === null) {
+            throw new EntityNotFoundError({
+                entity: this.entityClass.name,
+                table: this.entityClass.tableName,
+                criteriaColumns: Object.keys(conditions),
+            });
+        }
+
+        return found;
+    }
+
+    /**
+     * Delete every row in the table, via `TRUNCATE`.
+     *
+     * Unlike a `DELETE`, this writes no tombstones — it drops the SSTables.
+     *
+     * @returns {Promise<void>}
+     */
+    public async clear(): Promise<void> {
+        await this.dataSource.executeQuery<null>(`TRUNCATE ${this.entityClass.getTableName()}`, [], this.options);
+    }
+
+    /**
+     * Build and run the counter UPDATE shared by `increment()` and `decrement()`.
+     *
+     * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
+     * @param {string} key The property name of the COUNTER column.
+     * @param {number} by How far to move the counter.
+     * @param {'+' | '-'} sign Which way `by` is applied.
+     * @param {string} clause How to name the conditions if they turn out to be empty.
+     * @returns {Promise<void>}
+     */
+    private async moveCounter(
+        conditions: Partial<T>,
+        key: string,
+        by: number,
+        sign: '+' | '-',
+        clause: string
+    ): Promise<void> {
+        const entity = this.entityClass.name;
+        const column = this.assertColumn(key);
+
+        if (!this.counterColumns().has(key)) {
+            throw InvalidQueryError.notACounterColumn(key, entity);
+        }
+
+        // Safe integer, checked locally: the wire type is a 64-bit counter, and a
+        // fractional or unsafe number would be silently rounded on encoding
+        if (typeof by !== 'number' || !Number.isSafeInteger(by)) {
+            throw InvalidQueryError.invalidCounterDelta(by, key, entity);
+        }
+
+        const { conditionString, params } = this.buildEqualityConditions(conditions, clause);
+        const query = `UPDATE ${this.entityClass.getTableName()} SET ${column} = ${column} ${sign} ? WHERE ${conditionString}`;
+
+        await this.dataSource.executeQuery<null>(query, [by, ...params], this.options);
+    }
+
+    /**
+     * The property names declared as COUNTER columns.
+     *
+     * @returns {Set<string>} The counter column names, possibly empty.
+     */
+    private counterColumns(): Set<string> {
+        return new Set(
+            (this.entityClass.columns ?? []).filter((col) => col.type === 'COUNTER').map((col) => col.name)
+        );
     }
 
     /**
@@ -702,6 +1004,41 @@ export class Repository<T extends BaseModel> {
 
                         conditionStrings.push(`${column} IN (${new Array(operands.length).fill('?').join(', ')})`);
                         params.push(...operands);
+                        break;
+                    }
+                    case 'BETWEEN': {
+                        if (!Array.isArray(operand) || operand.length !== 2) {
+                            throw InvalidQueryError.invalidBetweenValues(key, entity, operand);
+                        }
+
+                        // Read by index like the IN branch: `map`/destructuring can be
+                        // overridden by an Array subclass
+                        const from = operand[0];
+                        const to = operand[1];
+
+                        if (!isBindable(from)) {
+                            throw InvalidQueryError.invalidConditionValue(key, entity, 'BETWEEN', from);
+                        }
+
+                        if (!isBindable(to)) {
+                            throw InvalidQueryError.invalidConditionValue(key, entity, 'BETWEEN', to);
+                        }
+
+                        // Expanded rather than emitted as CQL BETWEEN, which only newer
+                        // servers parse; the expansion is what BETWEEN means
+                        conditionStrings.push(`${column} >= ? AND ${column} <= ?`);
+                        params.push(from, to);
+                        break;
+                    }
+                    case 'CONTAINS':
+                    case 'CONTAINS KEY': {
+                        if (!isBindable(operand)) {
+                            throw InvalidQueryError.invalidConditionValue(key, entity, operator, operand);
+                        }
+
+                        // `operator` is the matched case literal here, never caller input
+                        conditionStrings.push(`${column} ${operator} ?`);
+                        params.push(operand);
                         break;
                     }
                     case '<':

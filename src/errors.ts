@@ -361,7 +361,146 @@ export class InvalidQueryError extends ScyllormError {
     static unsupportedOperator(operator: unknown, column: string, entity: string): InvalidQueryError {
         return new InvalidQueryError(
             `Unsupported operator ${quote(String(operator))} on column ${quote(column)} of entity ${entity}. ` +
-                'Supported operators are IN, =, <, <=, > and >=.'
+                'Supported operators are IN, =, <, <=, >, >=, BETWEEN, CONTAINS and CONTAINS KEY.'
+        );
+    }
+
+    /**
+     * Builds the error for a `BETWEEN` condition whose operand is not exactly
+     * two values.
+     *
+     * @param {string} column The column the condition was given for.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @param {unknown} value The rejected operand, reported by type only.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidBetweenValues(column: string, entity: string, value: unknown): InvalidQueryError {
+        return new InvalidQueryError(
+            `BETWEEN condition on column ${quote(column)} of entity ${entity} expects exactly two values, ` +
+                `received ${typeof value}. Build it with Between(from, to).`
+        );
+    }
+
+    /**
+     * Builds the error for an `update()` that assigns a primary key column,
+     * which CQL rejects — a key is the row's identity, not a cell.
+     *
+     * @param {string} column The primary key column that was assigned.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static primaryKeyAssignment(column: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Cannot update primary key column ${quote(column)} of entity ${entity}. ` +
+                'A primary key identifies the row; write a new row and delete the old one instead.'
+        );
+    }
+
+    /**
+     * Builds the error for an `update()` that assigns a COUNTER column, which
+     * CQL only allows to move relative to its current value.
+     *
+     * @param {string} column The counter column that was assigned.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static counterAssignment(column: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Cannot set counter column ${quote(column)} of entity ${entity} to a value. ` +
+                'Counters only move relative to themselves; use increment() or decrement().'
+        );
+    }
+
+    /**
+     * Builds the error for an `update()` value that is `undefined` — an
+     * accident in JavaScript, where deleting a cell is spelled `null`.
+     *
+     * @param {string} column The column the value was given for.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static undefinedAssignment(column: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Value for column ${quote(column)} of entity ${entity} is undefined. ` +
+                'Drop the key to leave the cell alone, or pass null to delete it.'
+        );
+    }
+
+    /**
+     * Builds the error for an `increment()`/`decrement()` on a column that is
+     * not a COUNTER, which the server would reject a round trip away.
+     *
+     * @param {string} column The column that was incremented.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static notACounterColumn(column: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Column ${quote(column)} of entity ${entity} is not a COUNTER column. ` +
+                'increment() and decrement() only apply to columns declared with @Column(\'COUNTER\'); ' +
+                'use update() for regular columns.'
+        );
+    }
+
+    /**
+     * Builds the error for a counter delta the wire type cannot carry exactly.
+     *
+     * @param {unknown} delta The rejected delta, as supplied.
+     * @param {string} column The counter column it was given for.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidCounterDelta(delta: unknown, column: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Invalid delta ${quote(String(delta))} for counter column ${quote(column)} of entity ${entity}. ` +
+                'A counter delta must be a safe integer.'
+        );
+    }
+}
+
+/** The structured payload carried by an {@link EntityNotFoundError}. */
+export interface EntityNotFoundDetails {
+    /** The name of the entity class the lookup was made for. */
+    entity: string;
+    /** The table the entity maps to, if it declares one. */
+    table?: string;
+    /** The columns the lookup matched on. Values are deliberately not carried. */
+    criteriaColumns: readonly string[];
+}
+
+/**
+ * Thrown by `findOneOrFail()` when no row matches the conditions.
+ *
+ * Carries the condition *columns* only, never their values — a lookup key is
+ * routinely sensitive (an email, a token) and this error is routinely logged.
+ */
+export class EntityNotFoundError extends ScyllormError {
+    /** The name of the entity class the lookup was made for. */
+    readonly entity: string;
+
+    /** The table the entity maps to, if it declares one. */
+    readonly table?: string;
+
+    /** The columns the lookup matched on. Values are deliberately not carried. */
+    readonly criteriaColumns: readonly string[];
+
+    constructor(details: EntityNotFoundDetails) {
+        super('SCYLLORM_ENTITY_NOT_FOUND', EntityNotFoundError.buildMessage(details));
+
+        this.name = 'EntityNotFoundError';
+        this.entity = details.entity;
+        this.table = details.table;
+        this.criteriaColumns = [...details.criteriaColumns];
+    }
+
+    private static buildMessage(details: EntityNotFoundDetails): string {
+        const shown = details.criteriaColumns.slice(0, MAX_LISTED_COLUMNS).map(quote);
+        const remaining = details.criteriaColumns.length - shown.length;
+
+        return (
+            `No ${details.entity} entity found${details.table ? ` in table ${quote(details.table)}` : ''} ` +
+            `matching on ${shown.join(', ')}${remaining > 0 ? ` …and ${remaining} more` : ''}. ` +
+            'Condition values are not echoed here; check them at the call site.'
         );
     }
 }

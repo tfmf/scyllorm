@@ -11,7 +11,7 @@ export type SimpleConditionValue = string | number | boolean | Buffer;
 export type BindableValue = unknown;
 
 // Supported operators for the condition https://opensource.docs.scylladb.com/stable/cql/dml/select.html#select
-export type OperatorType = 'IN' | '=' | '<' | '<=' | '>' | '>=';
+export type OperatorType = 'IN' | '=' | '<' | '<=' | '>' | '>=' | 'BETWEEN' | 'CONTAINS' | 'CONTAINS KEY';
 
 export interface Condition {
     operator: OperatorType;
@@ -108,6 +108,46 @@ export function GreaterThanOrEqual<T extends SimpleConditionValue>(value: T): Co
     return {
         operator: '>=',
         value,
+    };
+}
+
+/**
+ * Match values from `from` to `to`, both ends included.
+ *
+ * Emitted as `col >= ? AND col <= ?` rather than CQL's `BETWEEN`, which only
+ * newer server versions parse — the expansion is what BETWEEN means and runs
+ * everywhere.
+ */
+export function Between<T extends SimpleConditionValue>(from: T, to: T): Condition {
+    return {
+        operator: 'BETWEEN',
+        value: [from, to],
+    };
+}
+
+/**
+ * Match rows whose LIST, SET or MAP column contains the value.
+ *
+ * ScyllaDB requires an index on the collection or `allowFiltering` for this
+ * operator.
+ */
+export function Contains<T extends SimpleConditionValue>(value: T): Condition {
+    return {
+        operator: 'CONTAINS',
+        value,
+    };
+}
+
+/**
+ * Match rows whose MAP column contains the key.
+ *
+ * ScyllaDB requires an index on the map's keys or `allowFiltering` for this
+ * operator.
+ */
+export function ContainsKey<T extends SimpleConditionValue>(key: T): Condition {
+    return {
+        operator: 'CONTAINS KEY',
+        value: key,
     };
 }
 

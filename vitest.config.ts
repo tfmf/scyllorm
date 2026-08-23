@@ -33,10 +33,10 @@ export default defineConfig({
             // Global only — `perFile` would fail today on DataSource.ts (69%) and BaseModel.ts
             // (67%), which want tests rather than a threshold that has to be negotiated around.
             thresholds: {
-                statements: 91,
-                branches: 85,
-                functions: 92,
-                lines: 91,
+                statements: 97,
+                branches: 93,
+                functions: 97,
+                lines: 97,
             },
         },
     },

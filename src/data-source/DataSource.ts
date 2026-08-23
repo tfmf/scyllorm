@@ -72,7 +72,8 @@ export class DataSource {
 
         do {
             const result = await this.runQuery(query, params, { ...options, pageState }, retries);
-            rows.push(...(result.rows as T[]));
+            // `rows` is undefined for VOID results — INSERT, UPDATE, DELETE, DDL
+            rows.push(...((result.rows ?? []) as T[]));
             pageState = result.pageState;
         } while (pageState);
 
@@ -98,7 +99,9 @@ export class DataSource {
         retries: number = 0
     ): Promise<PagedResult<T>> {
         const result = await this.runQuery(query, params, options, retries);
-        return { rows: result.rows as T[], pageState: result.pageState };
+
+        // The driver reports exhaustion as null; the Page contract says undefined
+        return { rows: (result.rows ?? []) as T[], pageState: result.pageState ?? undefined };
     }
 
     /**
@@ -121,7 +124,7 @@ export class DataSource {
 
         do {
             const result = await this.runQuery(query, params, { ...options, pageState });
-            yield* result.rows as T[];
+            yield* (result.rows ?? []) as T[];
             pageState = result.pageState;
         } while (pageState);
     }
