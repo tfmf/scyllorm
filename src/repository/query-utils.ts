@@ -28,6 +28,13 @@ export interface OrderByOption {
 }
 
 export interface FindOptions {
+    /**
+     * The columns to read instead of `*`, as property names declared on the
+     * entity; validated against the entity's metadata. Unselected properties
+     * of the mapped entities keep their constructor defaults, or stay
+     * undefined. An empty array throws `InvalidQueryError`.
+     */
+    select?: string[];
     where?: NestedConditions;
     orderBy?: { [column: string]: 'ASC' | 'DESC' };
     /** Must be an integer from 1 to 2147483647 at runtime; anything else throws `InvalidQueryError`. */
@@ -36,6 +43,16 @@ export interface FindOptions {
     fetchSize?: number;
     /** Cursor returned by a previous `findPaged()`. Only used by `findPaged()` and `stream()`. */
     pageState?: string;
+}
+
+/** Options for the write family: `save()`, `update()`, their statement builders and the LWT variants. */
+export interface WriteOptions {
+    /**
+     * Time to live in seconds; the written columns expire once it elapses.
+     * Must be a positive integer no larger than 2147483647 at runtime; anything
+     * else throws `InvalidQueryError`. Bound as a parameter, never interpolated.
+     */
+    ttl?: number;
 }
 
 /** The values for a raw query's `:name` placeholders, keyed by name without the colon. */
@@ -60,6 +77,16 @@ export interface RawQueryOptions {
     fetchSize?: number;
     /** Cursor returned by a previous `runRawQueryPaged()`. */
     pageState?: string;
+}
+
+/**
+ * A single statement of a batch: the CQL to run and the values bound to its
+ * `?` placeholders. Built by the `Repository` statement builders and executed
+ * by `DataSource.executeBatch()`.
+ */
+export interface BatchStatement {
+    query: string;
+    params: BindableValue[];
 }
 
 /** A row as the driver returned it, when `raw` is set. */

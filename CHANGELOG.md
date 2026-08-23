@@ -9,10 +9,44 @@ Breaking changes increment the major version.
 
 ### Added
 
-Tier 1 of the roadmap, complete. All additions are validated the same way as the existing
-query builders: column names are whitelisted against the entity's metadata, every value is
-bound to a `?` placeholder, and bad input throws locally instead of a round trip away.
+All additions are validated the same way as the existing query builders: column names are
+whitelisted against the entity's metadata, every value is bound to a `?` placeholder, and
+bad input throws locally instead of a round trip away.
 
+- **Schema synchronization** — `DataSource.synchronize(entities)` generates and runs the
+  schema from entity metadata: one `CREATE TABLE IF NOT EXISTS` per entity (partition keys,
+  clustering keys, `WITH CLUSTERING ORDER BY`) plus one `CREATE INDEX IF NOT EXISTS` per
+  `@Index`. Explicit opt-in — never automatic, never `ALTER`, never `DROP`. The builders are
+  exported (`buildSchema`, `buildCreateTable`, `buildCreateIndexes`) to inspect the DDL
+  without a connection. All generated statements are standard CQL 3, so they run on both
+  ScyllaDB and Apache Cassandra.
+- **Schema metadata** — `ColumnOptions.of` declares collection element types
+  (`@Column('LIST', { of: 'TEXT' })` → `list<text>`; MAP takes a `[key, value]` pair);
+  `PrimaryKeyColumnOptions.order` declares clustering direction; `PrimaryKeyColumnType`
+  widened from `'INT' | 'UUID' | 'TEXT'` to every scalar key type.
+- **Batch writes** — `Repository.saveStatement()` / `updateStatement()` /
+  `deleteStatement()` build the exact statement the plain call would run, without running
+  it; `DataSource.executeBatch(statements)` executes them as one atomic CQL logged batch.
+  The builders apply the same whitelist, validation and local rejections but run no
+  lifecycle hooks; an empty batch throws `InvalidQueryError`.
+- **Lifecycle hooks** — instance `beforeSave()` / `afterSave()` on the entity; static
+  `beforeUpdate(conditions, values)` / `afterUpdate(...)` and `beforeDelete(conditions)` /
+  `afterDelete(...)` on the entity class, since condition-targeted writes have no instance.
+  All hooks are awaited; a `before*` hook that throws aborts the write.
+- **`WriteOptions.ttl`** — `save()`, `update()` and their LWT and statement variants render
+  `USING TTL ?` with the value bound; anything that is not an integer from 1 to 2147483647
+  throws `InvalidQueryError` locally.
+- **Conditional writes (LWT)** — `insertIfNotExists(entity)`,
+  `updateIfExists(conditions, values)` and `deleteIfExists(conditions)` append
+  `IF NOT EXISTS` / `IF EXISTS` and return whether the server applied the write.
+- **Write-time validation** — values are checked against the column's declared CQL type
+  before the round trip, and `ColumnOptions.validate` adds a custom rule (return `true`,
+  `false`, or a string reason). Rejections throw the new `ColumnValidationError` (code
+  `SCYLLORM_COLUMN_VALIDATION`) carrying the column, entity, expectation and the value's
+  `typeof` — deliberately never the value itself.
+- **`FindOptions.select`** — column projection for `find()`, `findPaged()` and `stream()`,
+  whitelisted like every other identifier; unselected properties keep their constructor
+  defaults. An empty array throws `InvalidQueryError`.
 - **`update(conditions, values)`** — partial `UPDATE ... SET` without loading the entity
   first. `null` deletes a cell (tombstone); `undefined` throws `InvalidQueryError`, since in
   JavaScript it is almost always an accident. Assigning a primary key or COUNTER column

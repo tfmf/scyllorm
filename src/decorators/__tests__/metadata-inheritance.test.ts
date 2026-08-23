@@ -34,7 +34,7 @@ class Timestamped extends BaseModel {
 @Entity('users')
 @Index('idx_users_name', 'name')
 class User extends Timestamped {
-    @PrimaryKeyColumn('UUID')
+    @PrimaryKeyColumn('TEXT')
     id: string;
 
     @Column('TEXT')
