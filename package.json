@@ -30,7 +30,7 @@
         "prepare": "npm run build"
     },
     "dependencies": {
-        "cassandra-driver": "^4.7.2",
+        "cassandra-driver": "^4.9.0",
         "tslib": "^2.6.3"
     },
     "devDependencies": {
