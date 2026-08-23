@@ -2,8 +2,47 @@
 
 All notable changes to this project are documented here.
 
-This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
-the major version is `0`, breaking changes are released under a new minor version.
+This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Breaking changes increment the major version.
+
+## [0.4.0] - 2026-08-23
+
+### Added
+
+Tier 1 of the roadmap, complete. All additions are validated the same way as the existing
+query builders: column names are whitelisted against the entity's metadata, every value is
+bound to a `?` placeholder, and bad input throws locally instead of a round trip away.
+
+- **`update(conditions, values)`** — partial `UPDATE ... SET` without loading the entity
+  first. `null` deletes a cell (tombstone); `undefined` throws `InvalidQueryError`, since in
+  JavaScript it is almost always an accident. Assigning a primary key or COUNTER column
+  throws locally with a pointer to the right tool.
+- **`increment(conditions, column, by = 1)` / `decrement(...)`** — COUNTER column support
+  (`SET c = c + ?`). The column must be declared `@Column('COUNTER')`; the delta must be a
+  safe integer.
+- **`count(conditions?, allowFiltering?)` / `countBy(conditions, allowFiltering?)`** —
+  `SELECT COUNT(*)`, returned as a `number`.
+- **`exists()` / `existsBy(conditions, allowFiltering?)`** — boolean existence via
+  `SELECT ... LIMIT 1`, cheaper than counting.
+- **`create(plain?)`** — entity factory. Column defaults apply first, then only *declared*
+  columns are copied from the input — an extra key on a request body is ignored, not
+  mass-assigned.
+- **`findOneOrFail(conditions, allowFiltering?)`** — throws the new `EntityNotFoundError`
+  (code `SCYLLORM_ENTITY_NOT_FOUND`) when nothing matches. The error carries the condition
+  *columns* on `.criteriaColumns`, deliberately never their values — lookup keys are
+  routinely sensitive and errors are routinely logged.
+- **`clear()`** — `TRUNCATE` the table.
+- **`Between(from, to)`** — inclusive range, emitted as `col >= ? AND col <= ?` so it runs
+  on servers that predate CQL `BETWEEN`.
+- **`Contains(value)` / `ContainsKey(key)`** — ScyllaDB collection operators for
+  LIST/SET/MAP columns (`CONTAINS` / `CONTAINS KEY`).
+- **End-to-end suite** — `npm run test:e2e` boots ScyllaDB in Docker, runs `e2e/` against
+  the live server and tears the container down.
+
+### Changed
+
+- `OperatorType` gains `'BETWEEN' | 'CONTAINS' | 'CONTAINS KEY'` — a widening; existing
+  code is unaffected. The `unsupportedOperator` message now lists the new operators.
 
 ## [0.3.0] - 2026-08-13
 

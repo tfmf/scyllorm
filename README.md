@@ -2,7 +2,7 @@
 [![NPM](https://img.shields.io/npm/v/scyllorm)](https://www.npmjs.com/package/scyllorm)
 [![npm downloads](https://img.shields.io/npm/dt/scyllorm.svg)](https://www.npmjs.com/package/scyllorm)
 [![CI](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml/badge.svg)](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-98%25-brightgreen)](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/tfmf/scyllorm/blob/main/LICENSE)
 
 <p align="left">
@@ -237,6 +237,56 @@ Now, let’s put this thing to work:
 run();
 ```
 
+#### Write without reading first ✍️
+
+`update()` changes columns in place — no need to load and re-`save()` the whole
+entity. Conditions must identify rows by primary key, and like every CQL write
+it is an upsert. Pass `null` to delete a cell; `undefined` throws, because in
+JavaScript it is almost always an accident.
+
+```typescript
+await repository.update({ id: 1 }, { city: 'Berlin', age: 31 });
+await repository.update({ id: 1 }, { city: null }); // deletes the cell
+
+// COUNTER columns move relative to themselves — update() rejects them:
+await repository.increment({ id: 'home' }, 'views');      // +1
+await repository.increment({ id: 'home' }, 'views', 5);   // +5
+await repository.decrement({ id: 'home' }, 'views', 2);   // -2
+
+await repository.clear(); // TRUNCATE — empties the table
+```
+
+#### Counts, existence and factories 🔢
+
+```typescript
+const total = await repository.count();
+const adults = await repository.countBy({ age: GreaterThanOrEqual(18) }, true);
+
+const anyRows = await repository.exists();
+const hasJohn = await repository.existsBy({ first_name: 'John' }, true);
+
+// Build an entity from a plain object — only declared columns are copied,
+// so a request body can't mass-assign anything you didn't model:
+const employee = repository.create({ id: 3, first_name: 'Ana', role: 'admin' }); // `role` ignored
+await repository.save(employee);
+
+// Like findOneBy(), but absence is an error (EntityNotFoundError):
+const found = await repository.findOneOrFail({ id: 3 });
+```
+
+#### Range and collection operators 🎯
+
+```typescript
+import { Between, Contains, ContainsKey } from 'scyllorm';
+
+// Inclusive range, emitted as `age >= ? AND age <= ?`:
+await repository.find({ where: { age: Between(25, 30) } }, true);
+
+// LIST/SET/MAP membership — needs an index on the collection or ALLOW FILTERING:
+await repository.find({ where: { tags: Contains('typescript') } }, true);
+await repository.find({ where: { metadata: ContainsKey('team') } }, true);
+```
+
 ### 7. Handle Large Result Sets 📄
 
 ScyllaDB returns results one page at a time (5000 rows by default). `find()`
@@ -328,7 +378,13 @@ catches all of them — switch on `.code` rather than the message, since codes a
 stable and messages are not.
 
 ```typescript
-import { ScyllormError, UnknownColumnError, InvalidQueryError, QueryFailedError } from 'scyllorm';
+import {
+    ScyllormError,
+    UnknownColumnError,
+    InvalidQueryError,
+    QueryFailedError,
+    EntityNotFoundError,
+} from 'scyllorm';
 
 try {
     await repository.find({ where: { nope: 1 } });
@@ -343,6 +399,9 @@ try {
         // not an integer from 1 to 2147483647.
     } else if (error instanceof QueryFailedError) {
         // The server rejected the query; the driver's error is on error.cause.
+    } else if (error instanceof EntityNotFoundError) {
+        // findOneOrFail() found nothing. Carries the condition columns on
+        // .criteriaColumns — never their values, which are routinely sensitive.
     } else if (error instanceof ScyllormError) {
         // Any other Scyllorm-raised error.
     }
@@ -363,6 +422,7 @@ The suite runs on [Vitest](https://vitest.dev/) — no live ScyllaDB required, t
 npm test              # run the suite once
 npm run test:watch    # re-run on file changes
 npm run test:coverage # run with coverage, report written to coverage/
+npm run test:e2e      # end-to-end: boots ScyllaDB in Docker, runs e2e/, tears it down
 ```
 
 Open `coverage/index.html` for a browsable, file-by-file breakdown. CI runs
