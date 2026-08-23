@@ -2,7 +2,9 @@ import { Client, QueryOptions, errors, types } from 'cassandra-driver';
 import { ConnectionOptions } from './ConnectionOptions';
 import { Repository } from '../repository';
 import { BaseModel } from '../model';
-import { BindableValue } from '../repository/query-utils';
+import { BatchStatement, BindableValue } from '../repository/query-utils';
+import { buildSchema } from '../schema';
+import { InvalidQueryError } from '../errors';
 
 /**
  * A single page of a result set.
@@ -143,12 +145,24 @@ export class DataSource {
         options: QueryOptions,
         retries: number = 0
     ): Promise<types.ResultSet> {
+        return this.withRetry(() => this.client.execute(query, params, options), retries);
+    }
+
+    /**
+     * Run a driver call with the shared reconnect and retry behavior:
+     * reconnect first if the client is not connected, then retry on
+     * NoHostAvailableError/DriverInternalError up to MAX_RETRIES times.
+     * @param action The driver call to run.
+     * @param retries The current retry count.
+     * @returns Whatever the driver call resolves to.
+     */
+    private async withRetry<T>(action: () => Promise<T>, retries: number = 0): Promise<T> {
         if (!this.connected) {
             console.warn('ScyllaDB is not connected. Attempting to reconnect...');
             await this.reconnect();
         }
         try {
-            return await this.client.execute(query, params, options);
+            return await action();
         } catch (error) {
             if (
                 (error instanceof errors.NoHostAvailableError || error instanceof errors.DriverInternalError) &&
@@ -156,12 +170,34 @@ export class DataSource {
             ) {
                 retries++;
                 console.warn(`Connection lost. Retrying query attempt ${retries}/${this.MAX_RETRIES}.`);
-                return this.runQuery(query, params, options, retries);
+                return this.withRetry(action, retries);
             } else {
                 console.error(`Query failed: ${error}`);
                 throw error;
             }
         }
+    }
+
+    /**
+     * Execute a batch of statements atomically as a CQL logged batch.
+     *
+     * Build the statements with the `Repository` statement builders —
+     * `saveStatement()`, `updateStatement()`, `deleteStatement()` — which run
+     * no lifecycle hooks; nothing is executed until the batch is passed here.
+     * Reconnects and retries on NoHostAvailableError/DriverInternalError, the
+     * same as every other query.
+     *
+     * @param statements The statements to run, at least one.
+     * @param options Query options, such as preparation settings.
+     * @returns A promise that resolves when the batch has been applied.
+     * @throws {InvalidQueryError} If `statements` is empty.
+     */
+    public async executeBatch(statements: BatchStatement[], options: QueryOptions = { prepare: true }): Promise<void> {
+        if (statements.length === 0) {
+            throw InvalidQueryError.emptyBatch();
+        }
+
+        await this.withRetry(() => this.client.batch(statements, options));
     }
 
     /**
@@ -179,6 +215,24 @@ export class DataSource {
      */
     public getRepository<T extends BaseModel>(entityClass: (new () => T) & typeof BaseModel): Repository<T> {
         return new Repository<T>(this, entityClass);
+    }
+
+    /**
+     * Create the tables and indexes for the given entities from their metadata.
+     *
+     * Runs each entity's `CREATE TABLE IF NOT EXISTS` first, then its
+     * `CREATE INDEX IF NOT EXISTS` statements, in order. DDL is executed with
+     * `prepare: false` — schema statements must not be prepared.
+     *
+     * @param entities The entity classes to synchronize.
+     * @returns A promise that resolves when every statement has run.
+     */
+    public async synchronize(entities: Array<typeof BaseModel>): Promise<void> {
+        for (const entity of entities) {
+            for (const statement of buildSchema(entity)) {
+                await this.executeQuery(statement, [], { prepare: false });
+            }
+        }
     }
 
     /**

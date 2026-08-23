@@ -437,8 +437,106 @@ export class InvalidQueryError extends ScyllormError {
     static notACounterColumn(column: string, entity: string): InvalidQueryError {
         return new InvalidQueryError(
             `Column ${quote(column)} of entity ${entity} is not a COUNTER column. ` +
-                'increment() and decrement() only apply to columns declared with @Column(\'COUNTER\'); ' +
+                "increment() and decrement() only apply to columns declared with @Column('COUNTER'); " +
                 'use update() for regular columns.'
+        );
+    }
+
+    /**
+     * Builds the error for a schema identifier — a table, column or index name —
+     * that is not a legal unquoted CQL identifier. DDL cannot parameterize
+     * identifiers, so anything failing this shape never reaches the server.
+     *
+     * @param {string} kind What the identifier names: 'table', 'column' or 'index'.
+     * @param {string} identifier The rejected identifier.
+     * @param {string} entity The name of the entity class the schema was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidSchemaIdentifier(kind: string, identifier: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Invalid ${kind} identifier ${quote(identifier)} on entity ${entity}. ` +
+                'A schema identifier must start with a letter or underscore and contain only ' +
+                'letters, digits and underscores.'
+        );
+    }
+
+    /**
+     * Builds the error for an entity with no partition key, whose table
+     * definition CQL would reject outright.
+     *
+     * @param {string} entity The name of the entity class the schema was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static missingPartitionKey(entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Entity ${entity} declares no partition key. ` +
+                'Mark at least one @PrimaryKeyColumn() with { partitionKey: true } to generate its schema.'
+        );
+    }
+
+    /**
+     * Builds the error for a primary key whose partition/clustering role the
+     * schema builder cannot place: neither flag set (the column would silently
+     * fall out of the generated PRIMARY KEY) or both set (it would render
+     * twice, DDL the server rejects a round trip away).
+     *
+     * @param {string} column The primary key column with the ambiguous role.
+     * @param {string} entity The name of the entity class the schema was built for.
+     * @param {boolean} both Whether both flags were set, rather than neither.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static ambiguousPrimaryKeyRole(column: string, entity: string, both: boolean): InvalidQueryError {
+        return new InvalidQueryError(
+            `Primary key column ${quote(column)} of entity ${entity} is marked as ` +
+                `${both ? 'both a partition key and a clustering key' : 'neither a partition key nor a clustering key'}. ` +
+                'To generate its schema, mark every @PrimaryKeyColumn() with exactly one of ' +
+                '{ partitionKey: true } or { clusteringKey: true }.'
+        );
+    }
+
+    /**
+     * Builds the error for a collection column declared without the element
+     * type its CQL definition needs.
+     *
+     * @param {string} column The collection column missing its element type.
+     * @param {string} entity The name of the entity class the schema was built for.
+     * @param {string} type The collection type the column was declared with.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static missingCollectionElementType(column: string, entity: string, type: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Collection column ${quote(column)} of entity ${entity} declares no element type. ` +
+                `Declare it with @Column(${quote(type)}, { of: … }) — ` +
+                'a single type for LIST and SET, a [key, value] pair for MAP.'
+        );
+    }
+
+    /**
+     * Builds the error for a column type the schema builder cannot express —
+     * TUPLE, FROZEN, or a collection nested inside another collection.
+     *
+     * @param {string} column The column with the unsupported type.
+     * @param {string} entity The name of the entity class the schema was built for.
+     * @param {string} type The type that cannot be rendered.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static unsupportedSchemaType(column: string, entity: string, type: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Cannot generate a schema definition for column ${quote(column)} of entity ${entity}: ` +
+                `type ${quote(type)} is not supported by the schema builder. ` +
+                'Create this table manually with runRawQuery() instead.'
+        );
+    }
+
+    /**
+     * Builds the error for a batch with no statements in it, which the server
+     * would reject a round trip away.
+     *
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static emptyBatch(): InvalidQueryError {
+        return new InvalidQueryError(
+            'Cannot execute an empty batch. Pass at least one statement, or skip the call instead.'
         );
     }
 
@@ -454,6 +552,22 @@ export class InvalidQueryError extends ScyllormError {
         return new InvalidQueryError(
             `Invalid delta ${quote(String(delta))} for counter column ${quote(column)} of entity ${entity}. ` +
                 'A counter delta must be a safe integer.'
+        );
+    }
+
+    /**
+     * Builds the error for a TTL the driver would reject as an `int` bind
+     * value, caught locally so the message names the caller's option rather
+     * than the driver's own type.
+     *
+     * @param {unknown} ttl The rejected TTL, as supplied.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidTtl(ttl: unknown, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Invalid TTL ${quote(String(ttl))} on entity ${entity}. ` +
+                'A TTL must be an integer number of seconds from 1 to 2147483647.'
         );
     }
 }
@@ -501,6 +615,58 @@ export class EntityNotFoundError extends ScyllormError {
             `No ${details.entity} entity found${details.table ? ` in table ${quote(details.table)}` : ''} ` +
             `matching on ${shown.join(', ')}${remaining > 0 ? ` …and ${remaining} more` : ''}. ` +
             'Condition values are not echoed here; check them at the call site.'
+        );
+    }
+}
+
+/** The structured payload carried by a {@link ColumnValidationError}. */
+export interface ColumnValidationDetails {
+    /** The column the rejected value was written to. */
+    column: string;
+    /** The name of the entity class the write was built for. */
+    entity: string;
+    /** What the column accepts — the type's shapes, or the custom validator's reason. */
+    expected: string;
+    /** The JavaScript `typeof` of the rejected value. The value itself is deliberately not carried. */
+    receivedType: string;
+}
+
+/**
+ * Thrown when a value written through `save()`/`update()` — or their statement
+ * and LWT variants — does not fit its column's declared type, or fails the
+ * column's own `validate` option.
+ *
+ * Carries the value's `typeof` only, never the value — a written cell is
+ * routinely sensitive (a token, an email) and this error is routinely logged.
+ */
+export class ColumnValidationError extends ScyllormError {
+    /** The column the rejected value was written to. */
+    readonly column: string;
+
+    /** The name of the entity class the write was built for. */
+    readonly entity: string;
+
+    /** What the column accepts — the type's shapes, or the custom validator's reason. */
+    readonly expected: string;
+
+    /** The JavaScript `typeof` of the rejected value. The value itself is deliberately not carried. */
+    readonly receivedType: string;
+
+    constructor(details: ColumnValidationDetails) {
+        super('SCYLLORM_COLUMN_VALIDATION', ColumnValidationError.buildMessage(details));
+
+        this.name = 'ColumnValidationError';
+        this.column = details.column;
+        this.entity = details.entity;
+        this.expected = details.expected;
+        this.receivedType = details.receivedType;
+    }
+
+    private static buildMessage(details: ColumnValidationDetails): string {
+        return (
+            `Invalid value of type ${details.receivedType} for column ${quote(details.column)} ` +
+            `of entity ${details.entity}. Expected: ${details.expected}. ` +
+            'The value itself is not echoed here; check it at the call site.'
         );
     }
 }

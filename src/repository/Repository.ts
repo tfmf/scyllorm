@@ -3,7 +3,9 @@ import { DataSource, PagedResult } from '../data-source/DataSource';
 import { BaseModel } from '../model/BaseModel';
 import { EntityNotFoundError, InvalidQueryError, QueryFailedError, UnknownColumnError } from '../errors';
 import { BoundQuery, bindNamedParameters } from './named-parameters';
+import { validateColumnValue } from './type-validation';
 import {
+    BatchStatement,
     BindableValue,
     SimpleConditionValue,
     NestedConditions,
@@ -12,6 +14,7 @@ import {
     RawQueryOptions,
     RawQueryParams,
     RawRow,
+    WriteOptions,
 } from './query-utils';
 
 /**
@@ -150,6 +153,19 @@ function extractCount(rows: RawRow[]): number {
     return typeof raw === 'number' ? raw : Number(String(raw));
 }
 
+/**
+ * Read the `[applied]` flag out of a lightweight-transaction result set.
+ *
+ * Every LWT returns exactly one row carrying it; anything else — no row, a
+ * missing column — reads as not applied rather than guessing that it was.
+ *
+ * @param {RawRow[]} rows The rows of the conditional write.
+ * @returns {boolean} True if the server applied the write.
+ */
+function extractApplied(rows: RawRow[]): boolean {
+    return rows[0]?.['[applied]'] === true;
+}
+
 export class Repository<T extends BaseModel> {
     protected entityClass: (new () => T) & typeof BaseModel;
 
@@ -177,25 +193,109 @@ export class Repository<T extends BaseModel> {
     /**
      * Save the entity to the database.
      * CQL INSERT is an upsert — no SELECT round-trip needed.
+     *
+     * Awaits `entity.beforeSave()` before the query is built and `entity.afterSave()`
+     * after it succeeds; a hook that throws aborts the operation. No hooks run for
+     * `saveStatement()`, `increment()`/`decrement()`, `clear()` or the raw-query family.
+     *
      * @param {T} entity - The entity to save.
+     * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
      * @returns {Promise<T>} The saved entity.
+     * @throws {InvalidQueryError} If `ttl` is not an integer from 1 to 2147483647.
+     * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
      */
-    public async save(entity: T): Promise<T> {
+    public async save(entity: T, options?: WriteOptions): Promise<T> {
+        // Before the build, not just the execute: a throwing hook aborts the save
+        // before any of the entity's values are read
+        await entity.beforeSave?.();
+
+        const { query, params } = this.buildInsertStatement(entity, options);
+        await this.dataSource.executeQuery<never>(query, params, this.options);
+
+        await entity.afterSave?.();
+
+        return entity;
+    }
+
+    /**
+     * Insert the entity only if no row with its primary key exists, via a
+     * lightweight transaction.
+     *
+     * Unlike `save()`, this never overwrites: the server takes a Paxos round to
+     * decide, which costs more than a plain INSERT — use it only where the
+     * race matters. Runs the same `beforeSave()`/`afterSave()` hooks as `save()`.
+     *
+     * @param {T} entity The entity to insert.
+     * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
+     * @returns {Promise<boolean>} True if the server applied the insert, false if the row already existed.
+     * @throws {InvalidQueryError} If `ttl` is not an integer from 1 to 2147483647.
+     * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
+     */
+    public async insertIfNotExists(entity: T, options?: WriteOptions): Promise<boolean> {
+        await entity.beforeSave?.();
+
+        const { query, params } = this.buildInsertStatement(entity, options, true);
+        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.options);
+
+        await entity.afterSave?.();
+
+        return extractApplied(rows);
+    }
+
+    /**
+     * Build the INSERT statement `save()` would run, without running it.
+     *
+     * Goes through the same column whitelist and validation as `save()`, but
+     * runs NO lifecycle hooks — the statement is only executed when passed to
+     * `DataSource.executeBatch()`.
+     *
+     * @param {T} entity The entity to build the INSERT for.
+     * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
+     * @returns {BatchStatement} The CQL and the values bound to its placeholders.
+     * @throws {InvalidQueryError} If `ttl` is not an integer from 1 to 2147483647.
+     * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
+     */
+    public saveStatement(entity: T, options?: WriteOptions): BatchStatement {
+        return this.buildInsertStatement(entity, options);
+    }
+
+    /**
+     * Build the INSERT shared by `save()`, `saveStatement()` and `insertIfNotExists()`.
+     *
+     * @param {T} entity The entity to build the INSERT for.
+     * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
+     * @param {boolean} [ifNotExists=false] Whether to append `IF NOT EXISTS`.
+     * @returns {BatchStatement} The CQL and the values bound to its placeholders.
+     */
+    private buildInsertStatement(entity: T, options?: WriteOptions, ifNotExists: boolean = false): BatchStatement {
         // Routed through the same whitelist as every other query builder, so a
         // malformed entity fails here too instead of reaching the driver unchecked
         const columnMap = this.getColumnMap();
         const keys = [...columnMap.keys()];
         const emitted = [...columnMap.values()];
         const placeholders = keys.map(() => '?').join(', ');
-        const params = keys.map((key) => entity[key as keyof T] as string | number | boolean | Buffer);
+        const params: BindableValue[] = keys.map((key) => {
+            const value = entity[key as keyof T];
 
-        // Construct and execute the INSERT query
-        const insertQuery = `INSERT INTO ${this.entityClass.getTableName()} (${emitted.join(
-            ', '
-        )}) VALUES (${placeholders})`;
-        await this.dataSource.executeQuery<null>(insertQuery, params, this.options);
+            this.assertValue(key, value);
 
-        return entity;
+            return value as string | number | boolean | Buffer;
+        });
+
+        let query = `INSERT INTO ${this.entityClass.getTableName()} (${emitted.join(', ')}) VALUES (${placeholders})`;
+
+        if (ifNotExists) {
+            query += ' IF NOT EXISTS';
+        }
+
+        // For INSERT the grammar puts USING at the end, after IF NOT EXISTS —
+        // the opposite of UPDATE, where it follows the table name
+        if (options?.ttl !== undefined) {
+            query += ' USING TTL ?';
+            params.push(this.assertTtl(options.ttl));
+        }
+
+        return { query, params };
     }
 
     /**
@@ -300,13 +400,77 @@ export class Repository<T extends BaseModel> {
     /**
      * Delete entities from the database based on the given conditions.
      * CQL DELETE is idempotent — no existence check needed.
+     *
+     * Awaits the static `beforeDelete()` on the entity class before the query runs and
+     * `afterDelete()` after it succeeds, both passed the conditions; a hook that throws
+     * aborts the operation. No hooks run for `deleteStatement()`, `clear()` or the
+     * raw-query family.
+     *
      * @param {Partial<T>} conditions The conditions to filter the entities.
      * @returns {Promise<void>}
      */
     public async delete(conditions: Partial<T>): Promise<void> {
+        const hookConditions = conditions as Record<string, unknown>;
+
+        await this.entityClass.beforeDelete?.(hookConditions);
+
+        const { query, params } = this.buildDeleteStatement(conditions);
+        await this.dataSource.executeQuery<never>(query, params, this.options);
+
+        await this.entityClass.afterDelete?.(hookConditions);
+    }
+
+    /**
+     * Delete the matching rows only if they exist, via a lightweight transaction.
+     *
+     * Unlike `delete()`, this reports whether anything was there: the server
+     * takes a Paxos round to decide, which costs more than a plain DELETE — use
+     * it only where the answer matters. Runs the same `beforeDelete()`/`afterDelete()`
+     * hooks as `delete()`.
+     *
+     * @param {Partial<T>} conditions The conditions to filter the entities.
+     * @returns {Promise<boolean>} True if the server applied the delete, false if no row matched.
+     * @throws {InvalidQueryError} If `conditions` is empty or carries a null value.
+     * @throws {UnknownColumnError} If a column is not declared on the entity.
+     */
+    public async deleteIfExists(conditions: Partial<T>): Promise<boolean> {
+        const hookConditions = conditions as Record<string, unknown>;
+
+        await this.entityClass.beforeDelete?.(hookConditions);
+
+        const { query, params } = this.buildDeleteStatement(conditions);
+        const rows = await this.dataSource.executeQuery<RawRow>(`${query} IF EXISTS`, params, this.options);
+
+        await this.entityClass.afterDelete?.(hookConditions);
+
+        return extractApplied(rows);
+    }
+
+    /**
+     * Build the DELETE statement `delete()` would run, without running it.
+     *
+     * Applies the same rejections as `delete()`, but runs NO lifecycle hooks —
+     * the statement is only executed when passed to `DataSource.executeBatch()`.
+     *
+     * @param {Partial<T>} conditions The conditions to filter the entities.
+     * @returns {BatchStatement} The CQL and the values bound to its placeholders.
+     * @throws {InvalidQueryError} If `conditions` is empty or carries a null value.
+     * @throws {UnknownColumnError} If a column is not declared on the entity.
+     */
+    public deleteStatement(conditions: Partial<T>): BatchStatement {
+        return this.buildDeleteStatement(conditions);
+    }
+
+    /**
+     * Build the DELETE shared by `delete()` and `deleteStatement()`.
+     *
+     * @param {Partial<T>} conditions The conditions to filter the entities.
+     * @returns {BatchStatement} The CQL and the values bound to its placeholders.
+     */
+    private buildDeleteStatement(conditions: Partial<T>): BatchStatement {
         const { conditionString, params } = this.buildEqualityConditions(conditions, 'delete() conditions');
-        const deleteQuery = `DELETE FROM ${this.entityClass.getTableName()} WHERE ${conditionString}`;
-        await this.dataSource.executeQuery<null>(deleteQuery, params, this.options);
+
+        return { query: `DELETE FROM ${this.entityClass.getTableName()} WHERE ${conditionString}`, params };
     }
 
     /**
@@ -316,14 +480,100 @@ export class Repository<T extends BaseModel> {
      * row creates it. Pass `null` to delete a cell; `undefined` throws, because
      * in JavaScript it is far more often a bug than a decision.
      *
+     * Awaits the static `beforeUpdate()` on the entity class before the query runs and
+     * `afterUpdate()` after it succeeds, both passed `(conditions, values)`; a hook that
+     * throws aborts the operation. No hooks run for `updateStatement()`,
+     * `increment()`/`decrement()` or the raw-query family.
+     *
      * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
      * @param {Partial<T>} values The columns to set and the values to set them to.
+     * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
      * @returns {Promise<void>}
      * @throws {InvalidQueryError} If `values` is empty, assigns a primary key or COUNTER column,
-     *     or carries an undefined value.
+     *     carries an undefined value, or `ttl` is not an integer from 1 to 2147483647.
      * @throws {UnknownColumnError} If a column is not declared on the entity.
+     * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
      */
-    public async update(conditions: Partial<T>, values: Partial<T>): Promise<void> {
+    public async update(conditions: Partial<T>, values: Partial<T>, options?: WriteOptions): Promise<void> {
+        const hookConditions = conditions as Record<string, unknown>;
+        const hookValues = values as Record<string, unknown>;
+
+        await this.entityClass.beforeUpdate?.(hookConditions, hookValues);
+
+        const { query, params } = this.buildUpdateStatement(conditions, values, options);
+        await this.dataSource.executeQuery<never>(query, params, this.options);
+
+        await this.entityClass.afterUpdate?.(hookConditions, hookValues);
+    }
+
+    /**
+     * Update columns only on a row that already exists, via a lightweight
+     * transaction.
+     *
+     * Unlike `update()`, this never creates the row: the server takes a Paxos
+     * round to decide, which costs more than a plain UPDATE — use it only where
+     * the upsert would be a bug. Runs the same `beforeUpdate()`/`afterUpdate()`
+     * hooks as `update()`.
+     *
+     * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
+     * @param {Partial<T>} values The columns to set and the values to set them to.
+     * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
+     * @returns {Promise<boolean>} True if the server applied the update, false if no row matched.
+     * @throws {InvalidQueryError} If `values` is empty, assigns a primary key or COUNTER column,
+     *     carries an undefined value, or `ttl` is not an integer from 1 to 2147483647.
+     * @throws {UnknownColumnError} If a column is not declared on the entity.
+     * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
+     */
+    public async updateIfExists(conditions: Partial<T>, values: Partial<T>, options?: WriteOptions): Promise<boolean> {
+        const hookConditions = conditions as Record<string, unknown>;
+        const hookValues = values as Record<string, unknown>;
+
+        await this.entityClass.beforeUpdate?.(hookConditions, hookValues);
+
+        const { query, params } = this.buildUpdateStatement(conditions, values, options, true);
+        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.options);
+
+        await this.entityClass.afterUpdate?.(hookConditions, hookValues);
+
+        return extractApplied(rows);
+    }
+
+    /**
+     * Build the UPDATE statement `update()` would run, without running it.
+     *
+     * Applies the same local rejections as `update()` — empty values, a primary
+     * key or COUNTER assignment, an undefined value — but runs NO lifecycle
+     * hooks; the statement is only executed when passed to
+     * `DataSource.executeBatch()`.
+     *
+     * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
+     * @param {Partial<T>} values The columns to set and the values to set them to.
+     * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
+     * @returns {BatchStatement} The CQL and the values bound to its placeholders.
+     * @throws {InvalidQueryError} If `values` is empty, assigns a primary key or COUNTER column,
+     *     carries an undefined value, or `ttl` is not an integer from 1 to 2147483647.
+     * @throws {UnknownColumnError} If a column is not declared on the entity.
+     * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
+     */
+    public updateStatement(conditions: Partial<T>, values: Partial<T>, options?: WriteOptions): BatchStatement {
+        return this.buildUpdateStatement(conditions, values, options);
+    }
+
+    /**
+     * Build the UPDATE shared by `update()`, `updateStatement()` and `updateIfExists()`.
+     *
+     * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
+     * @param {Partial<T>} values The columns to set and the values to set them to.
+     * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
+     * @param {boolean} [ifExists=false] Whether to append `IF EXISTS`.
+     * @returns {BatchStatement} The CQL and the values bound to its placeholders.
+     */
+    private buildUpdateStatement(
+        conditions: Partial<T>,
+        values: Partial<T>,
+        options?: WriteOptions,
+        ifExists: boolean = false
+    ): BatchStatement {
         const entity = this.entityClass.name;
 
         // Single pass over the entries, same as the condition builders: reading keys
@@ -356,6 +606,8 @@ export class Repository<T extends BaseModel> {
                 throw InvalidQueryError.undefinedAssignment(key, entity);
             }
 
+            this.assertValue(key, value);
+
             assignments.push(`${column} = ?`);
             params.push(value);
         }
@@ -364,11 +616,26 @@ export class Repository<T extends BaseModel> {
             conditions,
             'update() conditions'
         );
-        const query = `UPDATE ${this.entityClass.getTableName()} SET ${assignments.join(
+
+        // For UPDATE the grammar puts USING right after the table name, before
+        // SET — the opposite of INSERT, where it comes at the end
+        const ttlParams: BindableValue[] = [];
+        let using = '';
+
+        if (options?.ttl !== undefined) {
+            using = ' USING TTL ?';
+            ttlParams.push(this.assertTtl(options.ttl));
+        }
+
+        let query = `UPDATE ${this.entityClass.getTableName()}${using} SET ${assignments.join(
             ', '
         )} WHERE ${conditionString}`;
 
-        await this.dataSource.executeQuery<null>(query, [...params, ...whereParams], this.options);
+        if (ifExists) {
+            query += ' IF EXISTS';
+        }
+
+        return { query, params: [...ttlParams, ...params, ...whereParams] };
     }
 
     /**
@@ -539,7 +806,7 @@ export class Repository<T extends BaseModel> {
      * @returns {Promise<void>}
      */
     public async clear(): Promise<void> {
-        await this.dataSource.executeQuery<null>(`TRUNCATE ${this.entityClass.getTableName()}`, [], this.options);
+        await this.dataSource.executeQuery<never>(`TRUNCATE ${this.entityClass.getTableName()}`, [], this.options);
     }
 
     /**
@@ -575,7 +842,7 @@ export class Repository<T extends BaseModel> {
         const { conditionString, params } = this.buildEqualityConditions(conditions, clause);
         const query = `UPDATE ${this.entityClass.getTableName()} SET ${column} = ${column} ${sign} ? WHERE ${conditionString}`;
 
-        await this.dataSource.executeQuery<null>(query, [by, ...params], this.options);
+        await this.dataSource.executeQuery<never>(query, [by, ...params], this.options);
     }
 
     /**
@@ -584,9 +851,7 @@ export class Repository<T extends BaseModel> {
      * @returns {Set<string>} The counter column names, possibly empty.
      */
     private counterColumns(): Set<string> {
-        return new Set(
-            (this.entityClass.columns ?? []).filter((col) => col.type === 'COUNTER').map((col) => col.name)
-        );
+        return new Set((this.entityClass.columns ?? []).filter((col) => col.type === 'COUNTER').map((col) => col.name));
     }
 
     /**
@@ -758,7 +1023,7 @@ export class Repository<T extends BaseModel> {
 
     /**
      * Build the SELECT query and parameters shared by `find()`, `findPaged()` and `stream()`.
-     * @param {FindOptions} [options] The options including conditions, ordering and limit.
+     * @param {FindOptions} [options] The options including projection, conditions, ordering and limit.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {{ query: string, params: Array<SimpleConditionValue> }} The query and its parameters.
      */
@@ -766,7 +1031,18 @@ export class Repository<T extends BaseModel> {
         options?: FindOptions,
         allowFiltering: boolean = false
     ): { query: string; params: Array<string | number | Buffer | boolean> } {
-        let query = `SELECT * FROM ${this.entityClass.getTableName()}`;
+        let projection = '*';
+
+        if (options?.select !== undefined) {
+            if (options.select.length === 0) {
+                throw InvalidQueryError.emptyConditions('select clause', this.entityClass.name);
+            }
+
+            // Every name resolves through the whitelist, like a condition or sort column
+            projection = options.select.map((key) => this.assertColumn(key)).join(', ');
+        }
+
+        let query = `SELECT ${projection} FROM ${this.entityClass.getTableName()}`;
         let params: Array<string | number | Buffer | boolean> = [];
 
         if (options?.where) {
@@ -874,6 +1150,44 @@ export class Repository<T extends BaseModel> {
         }
 
         return coerced;
+    }
+
+    /**
+     * Resolve a caller-supplied TTL to the number to bind, or throw.
+     *
+     * Checked locally for the same reason as `LIMIT`: the bind marker is an
+     * `int`, and the driver's own rejection would name neither the entity nor
+     * the offending option. Zero is rejected too — CQL reads it as "no TTL",
+     * which a caller passing one never means.
+     *
+     * @param {unknown} ttl The TTL supplied by the caller, in seconds.
+     * @returns {number} The TTL to bind.
+     */
+    private assertTtl(ttl: unknown): number {
+        if (typeof ttl !== 'number' || !Number.isSafeInteger(ttl) || ttl <= 0 || ttl > MAX_CQL_INT) {
+            throw InvalidQueryError.invalidTtl(ttl, this.entityClass.name);
+        }
+
+        return ttl;
+    }
+
+    /**
+     * Validate a value about to be written to a column, or throw.
+     *
+     * Runs the column's declared type predicate and its `validate` option, if
+     * any. Only the write builders call this — reads and deletes bind values as
+     * supplied, so a driver type the ORM does not model still reaches the server.
+     *
+     * @param {string} key The property name being written; already on the whitelist.
+     * @param {unknown} value The value about to be bound.
+     * @throws {ColumnValidationError} If the value fails the type predicate or the custom validator.
+     */
+    private assertValue(key: string, value: unknown): void {
+        const definition = (this.entityClass.columns ?? []).find((col) => col.name === key);
+
+        if (definition !== undefined) {
+            validateColumnValue(this.entityClass.name, key, definition.type, value, definition.options?.validate);
+        }
     }
 
     /**
@@ -1076,12 +1390,20 @@ export class Repository<T extends BaseModel> {
     /* eslint-disable @typescript-eslint/no-explicit-any */
     /**
      * Map a row from the database to an entity.
+     *
+     * Columns absent from the row — a projection via `options.select`, or a raw
+     * query narrower than the table — are skipped, so the property keeps its
+     * constructor default or stays undefined.
+     *
      * @param {any} row The row from the database.
      * @returns {T} The entity.
      */
     private mapRowToEntity(row: any): T {
         const entity = new this.entityClass() as T;
         for (const col of this.entityClass.columns || []) {
+            if (!Object.prototype.hasOwnProperty.call(row, col.name)) {
+                continue;
+            }
             const rawValue = row[col.name];
             (entity as any)[col.name] = this.transformValue(rawValue, col.type);
         }

@@ -24,7 +24,7 @@ vi.mock('cassandra-driver', () => {
 
 @Entity('items')
 class Item extends BaseModel {
-    @PrimaryKeyColumn('UUID')
+    @PrimaryKeyColumn('TEXT')
     id: string;
 
     @Column('TEXT')

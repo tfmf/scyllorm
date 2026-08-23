@@ -2,12 +2,32 @@ import { BaseModel } from '../model/BaseModel';
 import { ColumnType, ColumnOptions } from './Column';
 import { ownMetadataArray, upsertByName } from './metadata-utils';
 
-export type PrimaryKeyColumnType = 'INT' | 'UUID' | 'TEXT';
+export type PrimaryKeyColumnType =
+    | 'ASCII'
+    | 'BIGINT'
+    | 'BLOB'
+    | 'BOOLEAN'
+    | 'DATE'
+    | 'DECIMAL'
+    | 'DOUBLE'
+    | 'FLOAT'
+    | 'INET'
+    | 'INT'
+    | 'SMALLINT'
+    | 'TEXT'
+    | 'TIME'
+    | 'TIMESTAMP'
+    | 'TIMEUUID'
+    | 'TINYINT'
+    | 'UUID'
+    | 'VARCHAR'
+    | 'VARINT';
 
 export interface PrimaryKeyColumnOptions {
     default?: unknown; // Default value for the column
     partitionKey?: boolean; // Whether the column is a partition key
     clusteringKey?: boolean; // Whether the column is a clustering key
+    order?: 'ASC' | 'DESC'; // Clustering order, only meaningful on clustering keys
 }
 
 /**

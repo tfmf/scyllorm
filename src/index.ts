@@ -4,6 +4,9 @@ export { DataSource, PagedResult } from './data-source/DataSource';
 // Exporting the Repository class for handling CRUD operations
 export { Repository } from './repository/Repository';
 
+// Export the schema builders, so callers can generate or inspect DDL without a connection
+export { buildCreateTable, buildCreateIndexes, buildSchema } from './schema';
+
 // Export operators and interfaces for defining query conditions
 export {
     In,
@@ -20,6 +23,7 @@ export {
 
 // Export the query and result types used by the Repository API
 export {
+    BatchStatement,
     BindableValue,
     Condition,
     FindOptions,
@@ -31,6 +35,7 @@ export {
     RawQueryParams,
     RawRow,
     SimpleConditionValue,
+    WriteOptions,
 } from './repository/query-utils';
 
 // Exporting the BaseModel class that all models should extend
@@ -43,11 +48,14 @@ export {
     InvalidQueryError,
     QueryFailedError,
     EntityNotFoundError,
+    ColumnValidationError,
 } from './errors';
-export type { UnknownColumnDetails, EntityNotFoundDetails } from './errors';
+export type { UnknownColumnDetails, EntityNotFoundDetails, ColumnValidationDetails } from './errors';
 
 // Exporting the Column, Table, and PrimaryKey decorators for defining model structures
 export { Column } from './decorators/Column';
+export type { ColumnType, ColumnOptions } from './decorators/Column';
+export type { PrimaryKeyColumnType, PrimaryKeyColumnOptions } from './decorators/PrimaryKey';
 export { Table } from './decorators/Table';
 export { PrimaryKeyColumn } from './decorators/PrimaryKey';
 export { Index } from './decorators/IndexDecorator';

@@ -1,4 +1,4 @@
-# Scyllorm - Typescript ORM for ScyllaDB
+# Scyllorm - TypeScript ORM for ScyllaDB & Apache Cassandra
 [![NPM](https://img.shields.io/npm/v/scyllorm)](https://www.npmjs.com/package/scyllorm)
 [![npm downloads](https://img.shields.io/npm/dt/scyllorm.svg)](https://www.npmjs.com/package/scyllorm)
 [![CI](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml/badge.svg)](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml)
@@ -10,9 +10,9 @@
 </p>
 
 
-Welcome to **Scyllorm**—an experimental TypeScript ORM for ScyllaDB that’s so fresh, it’s practically still in beta diapers. Inspired by [TypeORM](https://github.com/typeorm/typeorm), we’ve set out to simplify database interactions in Node.js. By “simplify,” we mean it’s highly opinionated, so prepare to adopt our opinions, or go find another ORM. Features? Yeah, we’ve got some—just not all of them (yet). A few are stuck in the backlog, and others are on Scylla’s “no-can-do” list. 
+Welcome to **Scyllorm**—an experimental TypeScript ORM for ScyllaDB and Apache Cassandra that’s so fresh, it’s practically still in beta diapers. We’ve set out to simplify database interactions in Node.js. By “simplify,” we mean it’s highly opinionated, so prepare to adopt our opinions, or go find another ORM. Features? Yeah, we’ve got some—just not all of them (yet). A few are stuck in the backlog, and others are on the database’s “no-can-do” list.
 
-And by the way, we use the Node.js [Cassandra driver](https://github.com/datastax/nodejs-driver/), so theoretically, you could use this with Cassandra too... but we haven’t tested it. So if you’re feeling adventurous, go ahead and be our guinea pig.
+Under the hood we use the Node.js [Cassandra driver](https://github.com/datastax/nodejs-driver/), and every statement Scyllorm generates is standard CQL 3—no Scylla-only extensions. That makes **both ScyllaDB and Apache Cassandra (3.x/4.x) first-class citizens**: same API, same CQL, pick whichever keeps your pager quieter.
 
 Oh, and we’re currently rolling with the [Data Mapper Pattern](https://en.wikipedia.org/wiki/Data_mapper_pattern) because it’s what all the cool ORMs are doing. Maybe someday we’ll add the [Active Record Pattern](https://en.wikipedia.org/wiki/Active_record_pattern), but we’re still debating whether we like our records active or not.
 
@@ -91,6 +91,8 @@ CREATE TABLE employees (
 CREATE INDEX employees_first_first_name_idx ON employees (first_name);
 CREATE INDEX employees_first_last_name_idx ON employees (last_name);
 ```
+
+Allergic to hand-written DDL? Your entities can generate all of this for you — see §10, Schema Synchronization.
 
 ### 4. Create Your Model 🎨
 Now, let’s make a model:
@@ -287,6 +289,17 @@ await repository.find({ where: { tags: Contains('typescript') } }, true);
 await repository.find({ where: { metadata: ContainsKey('team') } }, true);
 ```
 
+#### Select only the columns you need 📑
+
+`find()`, `findPaged()` and `stream()` take a `select` projection — property names
+declared on the entity, whitelisted like every other identifier. Unselected
+properties keep their constructor defaults (or stay `undefined`); an empty array
+throws `InvalidQueryError`.
+
+```typescript
+const names = await repository.find({ select: ['first_name', 'last_name'], where: { id: 1 } });
+```
+
 ### 7. Handle Large Result Sets 📄
 
 ScyllaDB returns results one page at a time (5000 rows by default). `find()`
@@ -407,6 +420,184 @@ try {
     }
 }
 ```
+
+### 10. Schema Synchronization 🏗
+
+Your entities already describe the schema, so Scyllorm can write the DDL for you:
+`dataSource.synchronize()` runs one `CREATE TABLE IF NOT EXISTS` per entity, then
+one `CREATE INDEX IF NOT EXISTS` per `@Index`. It is an explicit opt-in call —
+never automatic on `initialize()`, and it never `ALTER`s or `DROP`s anything, so
+an existing table is left exactly as it was.
+
+Collection columns declare their element type with `of`, and clustering keys can
+pick a direction with `order` (rendered as `WITH CLUSTERING ORDER BY`). To keep
+the generated table honest, every `@PrimaryKeyColumn()` must be marked with
+exactly one of `{ partitionKey: true }` or `{ clusteringKey: true }` — anything
+else throws locally before a single statement reaches the server:
+
+```typescript
+import { BaseModel, Column, Entity, Index, PrimaryKeyColumn } from 'scyllorm';
+
+@Entity('posts')
+@Index('posts_author_idx', 'author')
+export class Post extends BaseModel {
+    @PrimaryKeyColumn('UUID', { partitionKey: true })
+    id: string;
+
+    @PrimaryKeyColumn('TIMEUUID', { clusteringKey: true, order: 'DESC' })
+    created_at: string;
+
+    @Column('TEXT')
+    author: string;
+
+    @Column('LIST', { of: 'TEXT' })
+    tags: string[];
+
+    @Column('MAP', { of: ['TEXT', 'INT'] })
+    reactions: Record<string, number>;
+}
+
+await dataSource.initialize();
+await dataSource.synchronize([Post]);
+```
+
+That generates — and runs, in order:
+
+```cql
+CREATE TABLE IF NOT EXISTS posts (id uuid, created_at timeuuid, author text, tags list<text>, reactions map<text, int>, PRIMARY KEY (id, created_at)) WITH CLUSTERING ORDER BY (created_at DESC)
+CREATE INDEX IF NOT EXISTS posts_author_idx ON posts (author)
+```
+
+Unrenderable metadata fails fast, locally: a collection without `of`, a table
+without a partition key, or a `TUPLE`/`FROZEN` column (create those tables
+yourself) all throw before anything reaches the server. Prefer to look before
+you leap? The builders are exported too — `buildSchema(Post)` returns the DDL
+strings without needing a connection at all (also `buildCreateTable` and
+`buildCreateIndexes` individually).
+
+### 11. Lifecycle Hooks 🪝
+
+Entities can opt into lifecycle hooks — no decorators, no registration, just
+declare the method and Scyllorm awaits it. `save()` and `insertIfNotExists()`
+call the *instance* hooks; `update()`/`updateIfExists()` and
+`delete()`/`deleteIfExists()` target rows by conditions, so no instance exists —
+their hooks are *static* on the entity class. A `before*` hook that throws
+aborts the write before anything is sent; an `after*` hook that throws
+propagates to the caller (the write already happened).
+
+```typescript
+@Entity('employees')
+export class Employee extends BaseModel {
+    // ... columns from step 4 ...
+
+    async beforeSave(): Promise<void> {
+        this.updated_at = new Date(); // runs before the INSERT is even built
+    }
+
+    afterSave(): void {
+        console.log('saved!');
+    }
+
+    static beforeUpdate(conditions: Record<string, unknown>, values: Record<string, unknown>): void {
+        if ('id' in values) {
+            throw new Error('nope'); // throwing aborts the UPDATE
+        }
+    }
+
+    static afterDelete(conditions: Record<string, unknown>): void {
+        console.log('deleted rows matching', Object.keys(conditions));
+    }
+}
+```
+
+The full set: instance `beforeSave()`/`afterSave()`, static
+`beforeUpdate(conditions, values)`/`afterUpdate(conditions, values)` and
+`beforeDelete(conditions)`/`afterDelete(conditions)`. The statement builders
+(§13), `increment()`/`decrement()`, `clear()` and the raw-query family run **no
+hooks**.
+
+### 12. TTL and Conditional Writes ⏳
+
+Writes take a `ttl` in seconds, so rows (or the updated cells) expire on their
+own — no cleanup cron required. It renders as `USING TTL ?` with the value
+bound, and anything that is not an integer from 1 to 2147483647 throws
+`InvalidQueryError` locally:
+
+```typescript
+await repository.save(employee, { ttl: 3600 });
+await repository.update({ id: 1 }, { city: 'Berlin' }, { ttl: 60 });
+```
+
+When “every write is an upsert” is exactly what you *don’t* want, the
+conditional variants use a lightweight transaction and report whether the
+server applied the write:
+
+```typescript
+const inserted = await repository.insertIfNotExists(employee); // false — the row already existed
+const updated = await repository.updateIfExists({ id: 1 }, { city: 'Berlin' }); // false — no such row
+const deleted = await repository.deleteIfExists({ id: 1, first_name: 'John' }); // false — nothing there
+```
+
+The server takes a Paxos round to decide, which costs more than a plain write —
+reach for these only where the race (or the upsert) is the bug. They run the
+same lifecycle hooks as their plain counterparts, and `insertIfNotExists()` and
+`updateIfExists()` accept the same options (`ttl` included).
+
+### 13. Batch Writes 📦
+
+Every write has a statement-builder twin — `saveStatement()`,
+`updateStatement()`, `deleteStatement()` — that builds the exact CQL and bound
+values the plain call would run, without running it. Hand the statements to
+`dataSource.executeBatch()` and they execute as a single CQL logged batch:
+atomic, so either every statement applies or none does.
+
+```typescript
+const repository = dataSource.getRepository(Employee);
+
+await dataSource.executeBatch([
+    repository.saveStatement(employee),
+    repository.updateStatement({ id: 2, first_name: 'Jane' }, { city: 'Porto' }),
+    repository.deleteStatement({ id: 3, first_name: 'Bob' }),
+]);
+```
+
+The builders go through the same column whitelist, write-time validation and
+local rejections as their executing counterparts — a bad statement throws while
+you build it, before the batch even exists — and they accept the same
+`WriteOptions` (`ttl` included). They run **no lifecycle hooks**: nothing
+executes until the batch is passed to `executeBatch()`, which retries on
+`NoHostAvailableError`/`DriverInternalError` like every other query and throws
+`InvalidQueryError` on an empty batch.
+
+### 14. Write-Time Validation 🛡
+
+Every value going through `save()`/`update()` — and their statement and LWT
+variants — is checked against its column’s declared CQL type before the round
+trip: an `INT` must be integer-like, a `BOOLEAN` a boolean, a `TIMESTAMP` a
+`Date` (or another shape the driver can encode), and so on. The checks are
+deliberately permissive — they reject only values no accepted shape of the type
+could carry — so the failure happens locally, naming the column, instead of as
+a driver encoding error a round trip later.
+
+Columns can add their own rule with `validate`, run after the type check and
+only on non-null values. Return `true` to accept, `false` for a generic
+rejection, or a string to use as the reason:
+
+```typescript
+@Entity('employees')
+export class Employee extends BaseModel {
+    @PrimaryKeyColumn('INT', { partitionKey: true })
+    id: number;
+
+    @Column('INT', { validate: (value) => (value as number) >= 0 || 'must not be negative' })
+    age: number;
+}
+```
+
+A rejection throws `ColumnValidationError` (code `SCYLLORM_COLUMN_VALIDATION`),
+carrying `.column`, `.entity`, `.expected` and the value’s `.receivedType` — and
+deliberately never the value itself, because written cells are routinely
+sensitive and errors are routinely logged.
 
 ### Supported Column Types
 Scyllorm supports the following CQL column types:

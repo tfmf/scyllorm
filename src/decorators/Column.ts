@@ -31,6 +31,23 @@ export type ColumnType =
 
 export interface ColumnOptions {
     default?: unknown; // Default value for the column
+    /**
+     * Element type for collection columns, used when generating schema.
+     *
+     * A single type for LIST and SET (`{ of: 'TEXT' }` → `list<text>`), a
+     * `[key, value]` pair for MAP (`{ of: ['TEXT', 'INT'] }` → `map<text, int>`).
+     * Element types must be scalar — nested collections are not supported.
+     */
+    of?: ColumnType | [ColumnType, ColumnType];
+    /**
+     * Custom validator run on write, after the type check, only on non-null,
+     * non-undefined values.
+     *
+     * Return `true` to accept, `false` to reject with a generic message, or a
+     * string to reject with that string as the reason. The reason is carried on
+     * the thrown `ColumnValidationError`, so never put the value itself in it.
+     */
+    validate?: (value: unknown) => boolean | string;
 }
 
 /**
