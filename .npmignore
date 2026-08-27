@@ -17,3 +17,5 @@ eslint.config.mjs
 e2e/
 .github/
 vitest.e2e.config.ts
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md

@@ -634,6 +634,8 @@ match what the suite measured, so it cannot quietly drift out of date.
 ## Contributing
 Found a bug? Want to add a feature?  We welcome all contributions! Just open a PR and we'll review it as fas as humanly possible (or not)
 
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the test commands and what a reviewable PR looks like. Everyone taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Examples
 You can find examples in Typescript and Javascript inside the folder [src/examples](https://github.com/tfmf/scyllorm/tree/main/src/example)
 
