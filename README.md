@@ -2,7 +2,7 @@
 [![NPM](https://img.shields.io/npm/v/scyllorm)](https://www.npmjs.com/package/scyllorm)
 [![npm downloads](https://img.shields.io/npm/dt/scyllorm.svg)](https://www.npmjs.com/package/scyllorm)
 [![CI](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml/badge.svg)](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-98%25-brightgreen)](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-99%25-brightgreen)](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/tfmf/scyllorm/blob/main/LICENSE)
 
 <p align="left">
@@ -599,6 +599,37 @@ A rejection throws `ColumnValidationError` (code `SCYLLORM_COLUMN_VALIDATION`),
 carrying `.column`, `.entity`, `.expected` and the value’s `.receivedType` — and
 deliberately never the value itself, because written cells are routinely
 sensitive and errors are routinely logged.
+
+### 15. Consistency Levels and Logging 🎛
+
+Every call that takes an options bag accepts a per-query `consistency`, which
+overrides the client-wide default (`queryOptions.consistency` on the connection
+options). That covers `find()`, `findPaged()`, `stream()`, `save()`, `update()`,
+`delete()`, the conditional writes and the raw-query family. An unknown level
+throws `InvalidQueryError` locally:
+
+```typescript
+import { consistencies } from 'scyllorm';
+
+await repository.save(employee, { consistency: consistencies.localQuorum });
+await repository.delete({ id: 1 }, { consistency: consistencies.localQuorum });
+const rows = await repository.find({ where: { id: 1 }, consistency: consistencies.localOne });
+```
+
+The statement builders ignore it; a batch takes its consistency from the options
+passed to `executeBatch()`.
+
+Connection events and failed queries are logged to `console` by default. Pass a
+`logger` — anything with `info`, `warn` and `error`, such as pino or winston —
+to route them elsewhere, or no-op methods to silence them:
+
+```typescript
+const dataSource = new DataSource({
+    contactPoints: ['localhost'],
+    localDataCenter: 'datacenter1',
+    logger: myAppLogger,
+});
+```
 
 ### Supported Column Types
 Scyllorm supports the following CQL column types:

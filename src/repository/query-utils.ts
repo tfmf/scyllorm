@@ -46,7 +46,19 @@ export interface OrderByOption {
     direction?: 'ASC' | 'DESC';
 }
 
-export interface FindOptions {
+/** Options shared by every call that runs a query. */
+export interface ConsistencyOptions {
+    /**
+     * The consistency level for this query, overriding the client default
+     * (`queryOptions.consistency` on the connection options). A value of
+     * `consistencies`, e.g. `consistencies.localQuorum`; anything else throws
+     * `InvalidQueryError`. Ignored by the statement builders — a batch takes
+     * its consistency from `DataSource.executeBatch()`'s options.
+     */
+    consistency?: types.consistencies;
+}
+
+export interface FindOptions extends ConsistencyOptions {
     /**
      * The columns to read instead of `*`, as property names declared on the
      * entity; validated against the entity's metadata. Unselected properties
@@ -65,7 +77,7 @@ export interface FindOptions {
 }
 
 /** Options for the write family: `save()`, `update()`, their statement builders and the LWT variants. */
-export interface WriteOptions {
+export interface WriteOptions extends ConsistencyOptions {
     /**
      * Time to live in seconds; the written columns expire once it elapses.
      * Must be a positive integer no larger than 2147483647 at runtime; anything
@@ -80,7 +92,7 @@ export interface RawQueryParams {
 }
 
 /** Options for the raw-query family: `runRawQuery()`, `runRawQueryPaged()` and `streamRawQuery()`. */
-export interface RawQueryOptions {
+export interface RawQueryOptions extends ConsistencyOptions {
     /** Append `ALLOW FILTERING` to the query. */
     allowFiltering?: boolean;
     /**

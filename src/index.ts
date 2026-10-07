@@ -1,5 +1,11 @@
+import { types } from 'cassandra-driver';
+
 // Exporting the DataSource class for managing database connections
 export { DataSource, PagedResult } from './data-source/DataSource';
+export type { ConnectionOptions, Logger } from './data-source/ConnectionOptions';
+
+// The driver's consistency levels, for `consistency` on the query options
+export const consistencies = types.consistencies;
 
 // Exporting the Repository class for handling CRUD operations
 export { Repository } from './repository/Repository';
@@ -26,6 +32,7 @@ export {
     BatchStatement,
     BindableValue,
     Condition,
+    ConsistencyOptions,
     FindOptions,
     NestedConditions,
     OperatorType,
