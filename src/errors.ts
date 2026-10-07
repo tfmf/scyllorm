@@ -571,6 +571,21 @@ export class InvalidQueryError extends ScyllormError {
                 'A TTL must be an integer number of seconds from 1 to 2147483647.'
         );
     }
+
+    /**
+     * Builds the error for a consistency level the driver does not define,
+     * caught locally rather than as a protocol error from the server.
+     *
+     * @param {unknown} consistency The rejected level, as supplied.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidConsistency(consistency: unknown, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Invalid consistency level ${quote(String(consistency))} on entity ${entity}. ` +
+                'Use a value of `consistencies`, such as consistencies.localQuorum.'
+        );
+    }
 }
 
 /** The structured payload carried by an {@link EntityNotFoundError}. */

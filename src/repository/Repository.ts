@@ -7,6 +7,7 @@ import { validateColumnValue } from './type-validation';
 import {
     BatchStatement,
     BindableValue,
+    ConsistencyOptions,
     SimpleConditionValue,
     NestedConditions,
     FindOptions,
@@ -232,7 +233,7 @@ export class Repository<T extends BaseModel> {
         await entity.beforeSave?.();
 
         const { query, params } = this.buildInsertStatement(entity, options);
-        await this.dataSource.executeQuery<never>(query, params, this.options);
+        await this.dataSource.executeQuery<never>(query, params, this.consistencyQueryOptions(options));
 
         await entity.afterSave?.();
 
@@ -258,7 +259,7 @@ export class Repository<T extends BaseModel> {
         await entity.beforeSave?.();
 
         const { query, params } = this.buildInsertStatement(entity, options, true);
-        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.options);
+        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.consistencyQueryOptions(options));
         const applied = extractApplied(rows);
 
         // A write the server did not apply is not a save, so nothing happened to react to
@@ -335,7 +336,7 @@ export class Repository<T extends BaseModel> {
      */
     public async find(options?: FindOptions, allowFiltering: boolean = false): Promise<T[]> {
         const { query, params } = this.buildSelectQuery(options, allowFiltering);
-        const results = await this.dataSource.executeQuery<T>(query, params, this.options);
+        const results = await this.dataSource.executeQuery<T>(query, params, this.consistencyQueryOptions(options));
         return results.map((row) => this.mapRowToEntity(row));
     }
 
@@ -434,15 +435,16 @@ export class Repository<T extends BaseModel> {
      * raw-query family.
      *
      * @param {Partial<T>} conditions The conditions to filter the entities.
+     * @param {ConsistencyOptions} [options] The query options, such as `consistency`.
      * @returns {Promise<void>}
      */
-    public async delete(conditions: Partial<T>): Promise<void> {
+    public async delete(conditions: Partial<T>, options?: ConsistencyOptions): Promise<void> {
         const hookConditions = conditions as Record<string, unknown>;
 
         await this.entityClass.beforeDelete?.(hookConditions);
 
         const { query, params } = this.buildDeleteStatement(conditions);
-        await this.dataSource.executeQuery<never>(query, params, this.options);
+        await this.dataSource.executeQuery<never>(query, params, this.consistencyQueryOptions(options));
 
         await this.entityClass.afterDelete?.(hookConditions);
     }
@@ -456,17 +458,22 @@ export class Repository<T extends BaseModel> {
      * hooks as `delete()`; `afterDelete()` only when the delete was applied.
      *
      * @param {Partial<T>} conditions The conditions to filter the entities.
+     * @param {ConsistencyOptions} [options] The query options, such as `consistency`.
      * @returns {Promise<boolean>} True if the server applied the delete, false if no row matched.
      * @throws {InvalidQueryError} If `conditions` is empty or carries a null value.
      * @throws {UnknownColumnError} If a column is not declared on the entity.
      */
-    public async deleteIfExists(conditions: Partial<T>): Promise<boolean> {
+    public async deleteIfExists(conditions: Partial<T>, options?: ConsistencyOptions): Promise<boolean> {
         const hookConditions = conditions as Record<string, unknown>;
 
         await this.entityClass.beforeDelete?.(hookConditions);
 
         const { query, params } = this.buildDeleteStatement(conditions);
-        const rows = await this.dataSource.executeQuery<RawRow>(`${query} IF EXISTS`, params, this.options);
+        const rows = await this.dataSource.executeQuery<RawRow>(
+            `${query} IF EXISTS`,
+            params,
+            this.consistencyQueryOptions(options)
+        );
         const applied = extractApplied(rows);
 
         if (applied) {
@@ -531,7 +538,7 @@ export class Repository<T extends BaseModel> {
         await this.entityClass.beforeUpdate?.(hookConditions, hookValues);
 
         const { query, params } = this.buildUpdateStatement(conditions, values, options);
-        await this.dataSource.executeQuery<never>(query, params, this.options);
+        await this.dataSource.executeQuery<never>(query, params, this.consistencyQueryOptions(options));
 
         await this.entityClass.afterUpdate?.(hookConditions, hookValues);
     }
@@ -561,7 +568,7 @@ export class Repository<T extends BaseModel> {
         await this.entityClass.beforeUpdate?.(hookConditions, hookValues);
 
         const { query, params } = this.buildUpdateStatement(conditions, values, options, true);
-        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.options);
+        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.consistencyQueryOptions(options));
         const applied = extractApplied(rows);
 
         if (applied) {
@@ -1119,16 +1126,50 @@ export class Repository<T extends BaseModel> {
     }
 
     /**
-     * Build the driver query options, carrying over any paging settings.
-     * @param {{ fetchSize?: number, pageState?: string }} [options] Whatever the caller passed, find or raw.
+     * Build the driver query options, carrying over any paging settings and consistency.
+     * @param {{ fetchSize?: number, pageState?: string, consistency?: number }} [options] Whatever the caller
+     *     passed, find or raw.
      * @returns {QueryOptions} The options to pass to the driver.
      */
-    private buildQueryOptions(options?: { fetchSize?: number; pageState?: string }): QueryOptions {
+    private buildQueryOptions(options?: { fetchSize?: number; pageState?: string } & ConsistencyOptions): QueryOptions {
         return {
-            ...this.options,
+            ...this.consistencyQueryOptions(options),
             ...(options?.fetchSize !== undefined && { fetchSize: options.fetchSize }),
             ...(options?.pageState !== undefined && { pageState: options.pageState }),
         };
+    }
+
+    /**
+     * Build the driver query options for a call that runs to completion — a
+     * write, or a read of every page: the defaults plus `consistency`, never a
+     * page size or cursor.
+     * @param {ConsistencyOptions} [options] Whatever the caller passed.
+     * @returns {QueryOptions} The options to pass to the driver.
+     */
+    private consistencyQueryOptions(options?: ConsistencyOptions): QueryOptions {
+        if (options?.consistency === undefined) {
+            return this.options;
+        }
+
+        return { ...this.options, consistency: this.assertConsistency(options.consistency) };
+    }
+
+    /**
+     * Resolve a caller-supplied consistency level, or throw.
+     *
+     * The driver sends whatever number it is given, and the server answers an
+     * unknown one with a protocol error that names neither the entity nor the
+     * option.
+     *
+     * @param {unknown} consistency The consistency level supplied by the caller.
+     * @returns {types.consistencies} The level to send.
+     */
+    private assertConsistency(consistency: unknown): types.consistencies {
+        if (!Object.values(types.consistencies).includes(consistency as types.consistencies)) {
+            throw InvalidQueryError.invalidConsistency(consistency, this.entityClass.name);
+        }
+
+        return consistency as types.consistencies;
     }
 
     /**

@@ -1,5 +1,5 @@
-import { Client, QueryOptions, errors, types } from 'cassandra-driver';
-import { ConnectionOptions } from './ConnectionOptions';
+import { Client, ClientOptions, QueryOptions, errors, types } from 'cassandra-driver';
+import { ConnectionOptions, Logger } from './ConnectionOptions';
 import { Repository } from '../repository';
 import { BaseModel } from '../model';
 import { BatchStatement, BindableValue } from '../repository/query-utils';
@@ -22,9 +22,15 @@ export class DataSource {
     // The driver refuses to connect a Client that has been shut down, so the next initialize() replaces it
     private shutDown: boolean = false;
     private readonly MAX_RETRIES = 3; // Maximum number of retries
+    private readonly clientOptions: ClientOptions;
+    private readonly logger: Logger;
 
-    constructor(private readonly options: ConnectionOptions) {
-        this.client = new Client(options);
+    constructor(options: ConnectionOptions) {
+        const { logger, ...clientOptions } = options;
+
+        this.logger = logger ?? console;
+        this.clientOptions = clientOptions;
+        this.client = new Client(clientOptions);
     }
 
     /**
@@ -34,16 +40,16 @@ export class DataSource {
     public async initialize(): Promise<void> {
         if (!this.connected) {
             if (this.shutDown) {
-                this.client = new Client(this.options);
+                this.client = new Client(this.clientOptions);
                 this.shutDown = false;
             }
 
             try {
                 await this.client.connect();
                 this.connected = true;
-                console.info('Connected to ScyllaDB successfully.');
+                this.logger.info('Connected to ScyllaDB successfully.');
             } catch (error) {
-                console.error('Failed to connect to ScyllaDB.', error);
+                this.logger.error('Failed to connect to ScyllaDB.', error);
                 throw error;
             }
         }
@@ -167,7 +173,7 @@ export class DataSource {
      */
     private async withRetry<T>(action: () => Promise<T>, retries: number = 0): Promise<T> {
         if (!this.connected) {
-            console.warn('ScyllaDB is not connected. Attempting to reconnect...');
+            this.logger.warn('ScyllaDB is not connected. Attempting to reconnect...');
             await this.reconnect();
         }
         try {
@@ -178,10 +184,10 @@ export class DataSource {
                 retries < this.MAX_RETRIES
             ) {
                 retries++;
-                console.warn(`Connection lost. Retrying query attempt ${retries}/${this.MAX_RETRIES}.`);
+                this.logger.warn(`Connection lost. Retrying query attempt ${retries}/${this.MAX_RETRIES}.`);
                 return this.withRetry(action, retries);
             } else {
-                console.error(`Query failed: ${error}`);
+                this.logger.error(`Query failed: ${error}`);
                 throw error;
             }
         }
@@ -249,7 +255,7 @@ export class DataSource {
      * @returns A promise that resolves when the reconnection is complete.
      */
     private async reconnect(): Promise<void> {
-        console.log('Reconnecting to ScyllaDB...');
+        this.logger.info('Reconnecting to ScyllaDB...');
         await this.shutdown(); // Close the existing, possibly broken connection
         await this.initialize(); // Re-establish the connection
     }

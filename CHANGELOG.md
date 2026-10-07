@@ -5,6 +5,28 @@ All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes increment the major version.
 
+## [0.6.0] - 2026-10-07
+
+### Added
+
+- **Per-query consistency.** `FindOptions`, `WriteOptions` and `RawQueryOptions` gain
+  `consistency`, which overrides the client default for that one query. `delete()` and
+  `deleteIfExists()` gain an optional second argument, `{ consistency }`. The driver's levels
+  are re-exported as `consistencies`, so `consistencies.localQuorum` needs no direct
+  `cassandra-driver` import. An unknown level throws `InvalidQueryError` locally. The
+  statement builders ignore it, because a batch takes its consistency from
+  `executeBatch()`'s options.
+- **`logger` connection option.** Connection events and failed queries go to the given
+  logger instead of `console`. Anything with `info`, `warn` and `error` works, including
+  pino and winston. Pass no-op methods to silence Scyllorm. The default is still `console`,
+  and the option is not passed on to the driver.
+- `ConnectionOptions`, `Logger` and `ConsistencyOptions` are now exported types.
+
+### Changed
+
+- The "Reconnecting to ScyllaDB..." message is logged at `info` instead of through
+  `console.log`. Node prints both to stdout, so default output is unchanged.
+
 ## [0.5.1] - 2026-10-07
 
 ### Fixed
