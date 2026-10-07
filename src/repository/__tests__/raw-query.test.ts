@@ -10,13 +10,15 @@ import { InvalidQueryError, QueryFailedError, ScyllormError } from '../../errors
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 // Mock cassandra-driver
-vi.mock('cassandra-driver', () => {
+vi.mock('cassandra-driver', async (importOriginal) => {
     class MockClient {
         connect = vi.fn().mockResolvedValue(undefined);
         shutdown = vi.fn().mockResolvedValue(undefined);
         execute = vi.fn().mockResolvedValue({ rows: [] });
     }
+    // Partial mock: the real value types (`types.Long`, `types.Uuid`, …) stay available
     return {
+        ...(await importOriginal<typeof import('cassandra-driver')>()),
         Client: MockClient,
         errors: {
             NoHostAvailableError: class extends Error {},

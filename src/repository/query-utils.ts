@@ -1,5 +1,24 @@
-// Condition type that will be used in the find method
-export type SimpleConditionValue = string | number | boolean | Buffer;
+import type { types } from 'cassandra-driver';
+
+/**
+ * A value accepted in a `where` condition: a primitive, a `Buffer`, a `Date`, a
+ * `bigint`, or one of the driver's value classes.
+ */
+export type SimpleConditionValue =
+    | string
+    | number
+    | boolean
+    | Buffer
+    | Date
+    | bigint
+    | types.Long
+    | types.Uuid
+    | types.LocalDate
+    | types.LocalTime
+    | types.InetAddress
+    | types.BigDecimal
+    | types.Integer
+    | types.Duration;
 
 /**
  * A value bound to a `?` placeholder.

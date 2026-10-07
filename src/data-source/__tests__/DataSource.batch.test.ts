@@ -4,7 +4,7 @@ import { InvalidQueryError } from '../../errors';
 import { BatchStatement } from '../../repository/query-utils';
 
 // Mock the cassandra-driver module
-vi.mock('cassandra-driver', () => {
+vi.mock('cassandra-driver', async (importOriginal) => {
     class MockClient {
         connect = vi.fn().mockResolvedValue(undefined);
         shutdown = vi.fn().mockResolvedValue(undefined);
@@ -12,7 +12,9 @@ vi.mock('cassandra-driver', () => {
         batch = vi.fn().mockResolvedValue({ rows: [] });
     }
 
+    // Partial mock: the real value types (`types.Long`, `types.Uuid`, …) stay available
     return {
+        ...(await importOriginal<typeof import('cassandra-driver')>()),
         Client: MockClient,
         errors: {
             NoHostAvailableError: class NoHostAvailableError extends Error {},
@@ -132,14 +134,17 @@ describe('DataSource.executeBatch()', () => {
         expect(client.batch).toHaveBeenCalledTimes(1);
     });
 
-    it('reconnects (shutdown + connect) when running a batch while not connected', async () => {
+    it('reconnects on a fresh client (shutdown + new connect) when running a batch while not connected', async () => {
         const client = clientOf(ds);
         expect(ds.isConnected()).toBe(false);
 
         await ds.executeBatch(statements);
 
+        // The driver refuses to connect a shut-down Client, so the reconnect must use a fresh one
         expect(client.shutdown).toHaveBeenCalledTimes(1);
-        expect(client.connect).toHaveBeenCalledTimes(1);
+        expect(client.connect).not.toHaveBeenCalled();
+        expect(clientOf(ds)).not.toBe(client);
+        expect(clientOf(ds).connect).toHaveBeenCalledTimes(1);
         expect(ds.isConnected()).toBe(true);
     });
 });

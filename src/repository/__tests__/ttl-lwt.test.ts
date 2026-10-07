@@ -8,14 +8,16 @@ import { PrimaryKeyColumn } from '../../decorators/PrimaryKey';
 import { InvalidQueryError } from '../../errors';
 
 // Mock cassandra-driver
-vi.mock('cassandra-driver', () => {
+vi.mock('cassandra-driver', async (importOriginal) => {
     class MockClient {
         connect = vi.fn().mockResolvedValue(undefined);
         shutdown = vi.fn().mockResolvedValue(undefined);
         execute = vi.fn().mockResolvedValue({ rows: [] });
     }
 
+    // Partial mock: the real value types (`types.Long`, `types.Uuid`, …) stay available
     return {
+        ...(await importOriginal<typeof import('cassandra-driver')>()),
         Client: MockClient,
         errors: {
             NoHostAvailableError: class extends Error {},
@@ -256,5 +258,43 @@ describe('lightweight transactions', () => {
             'beforeDelete',
             'afterDelete',
         ]);
+    });
+    it('LWT methods skip the after* hooks when the write was not applied', async () => {
+        const { repo, setRows } = setup();
+        setRows([{ '[applied]': false }]);
+        const calls: string[] = [];
+
+        const entity = repo.create({ id: 'abc-123', name: 'Alice' });
+        entity.beforeSave = () => {
+            calls.push('beforeSave');
+        };
+        entity.afterSave = () => {
+            calls.push('afterSave');
+        };
+        Account.beforeUpdate = () => {
+            calls.push('beforeUpdate');
+        };
+        Account.afterUpdate = () => {
+            calls.push('afterUpdate');
+        };
+        Account.beforeDelete = () => {
+            calls.push('beforeDelete');
+        };
+        Account.afterDelete = () => {
+            calls.push('afterDelete');
+        };
+
+        try {
+            await repo.insertIfNotExists(entity);
+            await repo.updateIfExists({ id: 'abc-123' }, { name: 'Bob' });
+            await repo.deleteIfExists({ id: 'abc-123' });
+        } finally {
+            delete Account.beforeUpdate;
+            delete Account.afterUpdate;
+            delete Account.beforeDelete;
+            delete Account.afterDelete;
+        }
+
+        expect(calls).toEqual(['beforeSave', 'beforeUpdate', 'beforeDelete']);
     });
 });

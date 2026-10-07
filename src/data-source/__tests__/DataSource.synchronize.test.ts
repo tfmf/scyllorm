@@ -7,13 +7,15 @@ import { PrimaryKeyColumn } from '../../decorators/PrimaryKey';
 import { Index } from '../../decorators/IndexDecorator';
 
 // Mock the cassandra-driver module
-vi.mock('cassandra-driver', () => {
+vi.mock('cassandra-driver', async (importOriginal) => {
     class MockClient {
         connect = vi.fn().mockResolvedValue(undefined);
         shutdown = vi.fn().mockResolvedValue(undefined);
         execute = vi.fn().mockResolvedValue({ rows: [] });
     }
+    // Partial mock: the real value types (`types.Long`, `types.Uuid`, …) stay available
     return {
+        ...(await importOriginal<typeof import('cassandra-driver')>()),
         Client: MockClient,
         errors: {
             NoHostAvailableError: class NoHostAvailableError extends Error {},

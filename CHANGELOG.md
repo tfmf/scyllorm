@@ -5,6 +5,34 @@ All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes increment the major version.
 
+## [0.5.1] - 2026-10-07
+
+### Fixed
+
+Every fix below is covered by a unit test and by a new end-to-end case in
+`e2e/fixes-0.5.1.e2e.test.ts`. The unit suite mocks the driver, which is how these bugs
+got past it.
+
+- **camelCase properties read back as `undefined`.** CQL folds unquoted identifiers to
+  lowercase, so the server returns `firstname` for a column declared as `firstName`. Rows
+  are now mapped through the lowercased name when the exact name is absent. Writes were
+  unaffected; reads silently lost the value.
+- **`Date`, `bigint` and driver value types are accepted in `where` conditions.**
+  `GreaterThan(new Date())` on a TIMESTAMP key, `Between()` over `Long`s, `In([uuid])` and
+  the like threw `InvalidQueryError`. Equality lookups through `findOneBy()` and `delete()`
+  already accepted them. Plain objects and arrays are still rejected. `SimpleConditionValue`
+  widens to match. This is a widening, so existing code is unaffected.
+- **`synchronize()` accepts keyspace-qualified table names** (`@Entity('app.users')`), the
+  multi-keyspace pattern. Column and index names still allow no dot.
+- **A `DataSource` works again after `shutdown()`.** The driver refuses to reconnect a
+  client that has been shut down, so `initialize()` now creates a fresh one. This also fixes
+  the implicit connect on the first query when `initialize()` was never called, which failed
+  with `Connecting after shutdown is not supported`.
+- **The `after*` hooks of the conditional writes run only when the write was applied.**
+  `insertIfNotExists()`, `updateIfExists()` and `deleteIfExists()` used to call
+  `afterSave()`, `afterUpdate()` or `afterDelete()` even when the server reported
+  `[applied] = false`. That contradicted the documented "after it succeeds" behavior.
+
 ## [0.5.0] - 2026-08-23
 
 ### Added

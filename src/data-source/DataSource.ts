@@ -19,17 +19,25 @@ export interface PagedResult<T> {
 export class DataSource {
     private client: Client;
     private connected: boolean = false;
+    // The driver refuses to connect a Client that has been shut down, so the next initialize() replaces it
+    private shutDown: boolean = false;
     private readonly MAX_RETRIES = 3; // Maximum number of retries
 
-    constructor(options: ConnectionOptions) {
+    constructor(private readonly options: ConnectionOptions) {
         this.client = new Client(options);
     }
 
     /**
      * Initialize ScyllaDB client.
+     * Safe to call again after `shutdown()`: a fresh driver client is created.
      */
     public async initialize(): Promise<void> {
         if (!this.connected) {
+            if (this.shutDown) {
+                this.client = new Client(this.options);
+                this.shutDown = false;
+            }
+
             try {
                 await this.client.connect();
                 this.connected = true;
@@ -47,6 +55,7 @@ export class DataSource {
     public async shutdown(): Promise<void> {
         await this.client.shutdown();
         this.connected = false;
+        this.shutDown = true;
     }
 
     /**
