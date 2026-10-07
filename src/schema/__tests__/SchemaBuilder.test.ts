@@ -230,6 +230,31 @@ describe('buildCreateTable()', () => {
         expect(() => buildCreateTable(entity)).toThrow(/Invalid column identifier/);
     });
 
+    it('accepts a keyspace-qualified table name and carries it into the indexes', () => {
+        const entity = fakeEntity({
+            tableName: 'app.users',
+            indexes: [{ name: 'users_by_id', column: 'id' }],
+        });
+
+        expect(buildSchema(entity)).toEqual([
+            'CREATE TABLE IF NOT EXISTS app.users (id uuid, PRIMARY KEY (id))',
+            'CREATE INDEX IF NOT EXISTS users_by_id ON app.users (id)',
+        ]);
+    });
+
+    it.each(['a.b.c', 'app.', '.users', 'app.users; DROP TABLE x'])(
+        'rejects the malformed qualified table name %j',
+        (tableName) => {
+            expect(() => buildCreateTable(fakeEntity({ tableName }))).toThrow(/Invalid table identifier/);
+        }
+    );
+
+    it('still rejects a dot in a column name', () => {
+        const entity = fakeEntity({ columns: [{ name: 'app.id', type: 'UUID' }] });
+
+        expect(() => buildCreateTable(entity)).toThrow(/Invalid column identifier/);
+    });
+
     it('rejects a missing table name', () => {
         const entity = fakeEntity({ tableName: undefined });
 
@@ -250,6 +275,12 @@ describe('buildCreateIndexes()', () => {
         const entity = fakeEntity({ indexes: [{ name: 'fake_by_ghost', column: 'ghost' }] });
 
         expect(() => buildCreateIndexes(entity)).toThrow(UnknownColumnError);
+    });
+
+    it('still rejects a keyspace-qualified index name', () => {
+        const entity = fakeEntity({ indexes: [{ name: 'app.idx', column: 'id' }] });
+
+        expect(() => buildCreateIndexes(entity)).toThrow(/Invalid index identifier/);
     });
 
     it('rejects an injection attempt in the index name', () => {

@@ -5,19 +5,22 @@ import { BaseModel } from '../../model/BaseModel';
 import { Entity } from '../../decorators/Entity';
 import { Column } from '../../decorators/Column';
 import { PrimaryKeyColumn } from '../../decorators/PrimaryKey';
-import { In, GreaterThan } from '../query-utils';
+import { types } from 'cassandra-driver';
+import { In, GreaterThan, Between } from '../query-utils';
 import { InvalidQueryError, ScyllormError } from '../../errors';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 // Mock cassandra-driver
-vi.mock('cassandra-driver', () => {
+vi.mock('cassandra-driver', async (importOriginal) => {
     class MockClient {
         connect = vi.fn().mockResolvedValue(undefined);
         shutdown = vi.fn().mockResolvedValue(undefined);
         execute = vi.fn().mockResolvedValue({ rows: [] });
     }
+    // Partial mock: the real value types (`types.Long`, `types.Uuid`, …) stay available
     return {
+        ...(await importOriginal<typeof import('cassandra-driver')>()),
         Client: MockClient,
         errors: {
             NoHostAvailableError: class extends Error {},
@@ -323,6 +326,27 @@ describe('condition parsing', () => {
             await repo.findOneBy({ name: when as any });
 
             expect(executeSpy.mock.calls[0][1]).toEqual([when]);
+        });
+
+        it('should bind a Date in a range condition', async () => {
+            const when = new Date(0);
+
+            await repo.find({ where: { name: GreaterThan(when) } });
+
+            expect(executeSpy.mock.calls[0][0]).toBe('SELECT * FROM items WHERE name > ?');
+            expect(executeSpy.mock.calls[0][1]).toEqual([when]);
+        });
+
+        it('should bind driver value types and bigint in IN, Between and equality conditions', async () => {
+            const id = types.Uuid.random();
+            const low = types.Long.fromNumber(1);
+            const high = types.Long.fromNumber(10);
+
+            await repo.find({ where: { id: In([id]), quantity: Between(low, high) } });
+            await repo.findBy({ id, quantity: BigInt(3) });
+
+            expect(executeSpy.mock.calls[0][1]).toEqual([id, low, high]);
+            expect(executeSpy.mock.calls[1][1]).toEqual([id, BigInt(3)]);
         });
 
         it('should bind a Buffer through findBy()', async () => {

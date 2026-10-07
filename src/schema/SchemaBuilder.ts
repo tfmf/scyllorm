@@ -10,6 +10,9 @@ import { InvalidQueryError, UnknownColumnError } from '../errors';
  */
 const SCHEMA_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/** A table name: a schema identifier, optionally qualified by its keyspace (`keyspace.table`). */
+const TABLE_IDENTIFIER = /^([A-Za-z_][A-Za-z0-9_]*\.)?[A-Za-z_][A-Za-z0-9_]*$/;
+
 /** Collection types, which need an element type from `options.of` to render. */
 const COLLECTION_TYPES: ReadonlySet<string> = new Set(['LIST', 'SET', 'MAP']);
 
@@ -25,7 +28,9 @@ const UNSUPPORTED_TYPES: ReadonlySet<string> = new Set(['TUPLE', 'FROZEN']);
  * @returns {string} The identifier, unchanged.
  */
 function assertIdentifier(kind: string, identifier: string, entity: string): string {
-    if (!SCHEMA_IDENTIFIER.test(identifier)) {
+    const pattern = kind === 'table' ? TABLE_IDENTIFIER : SCHEMA_IDENTIFIER;
+
+    if (!pattern.test(identifier)) {
         throw InvalidQueryError.invalidSchemaIdentifier(kind, identifier, entity);
     }
 

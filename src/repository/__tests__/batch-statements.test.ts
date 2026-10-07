@@ -9,7 +9,7 @@ import { PrimaryKeyColumn } from '../../decorators/PrimaryKey';
 import { InvalidQueryError, UnknownColumnError } from '../../errors';
 
 // Mock cassandra-driver
-vi.mock('cassandra-driver', () => {
+vi.mock('cassandra-driver', async (importOriginal) => {
     class MockClient {
         connect = vi.fn().mockResolvedValue(undefined);
         shutdown = vi.fn().mockResolvedValue(undefined);
@@ -17,7 +17,9 @@ vi.mock('cassandra-driver', () => {
         batch = vi.fn().mockResolvedValue({ rows: [] });
     }
 
+    // Partial mock: the real value types (`types.Long`, `types.Uuid`, …) stay available
     return {
+        ...(await importOriginal<typeof import('cassandra-driver')>()),
         Client: MockClient,
         errors: {
             NoHostAvailableError: class extends Error {},

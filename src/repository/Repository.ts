@@ -1,4 +1,4 @@
-import { QueryOptions } from 'cassandra-driver';
+import { QueryOptions, types } from 'cassandra-driver';
 import { DataSource, PagedResult } from '../data-source/DataSource';
 import { BaseModel } from '../model/BaseModel';
 import { EntityNotFoundError, InvalidQueryError, QueryFailedError, UnknownColumnError } from '../errors';
@@ -123,13 +123,35 @@ function resolveRawOptions(options: RawQueryOptions | boolean): RawQueryOptions 
 /**
  * Whether a value can be bound to a `?` placeholder.
  *
+ * Plain objects and arrays are refused — they are how a condition is mis-shaped,
+ * not a value — but a `Date`, a `bigint` and the driver's own value classes
+ * (`Long`, `Uuid`, `LocalDate`, …) are what TIMESTAMP, BIGINT and UUID keys hold.
+ *
  * @param {unknown} value The value to bind.
  * @returns {boolean} True if the driver can bind it as-is.
  */
 function isBindable(value: unknown): value is SimpleConditionValue {
-    return (
-        typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value instanceof Buffer
-    );
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        return true;
+    }
+
+    if (typeof value === 'bigint' || value instanceof Buffer || value instanceof Date) {
+        return true;
+    }
+
+    // Read at call time, not import time: `types` only exists once the driver is loaded
+    const driverTypes = [
+        types.Long,
+        types.Uuid,
+        types.LocalDate,
+        types.LocalTime,
+        types.InetAddress,
+        types.BigDecimal,
+        types.Integer,
+        types.Duration,
+    ];
+
+    return driverTypes.some((driverType) => value instanceof driverType);
 }
 
 /**
@@ -223,7 +245,8 @@ export class Repository<T extends BaseModel> {
      *
      * Unlike `save()`, this never overwrites: the server takes a Paxos round to
      * decide, which costs more than a plain INSERT — use it only where the
-     * race matters. Runs the same `beforeSave()`/`afterSave()` hooks as `save()`.
+     * race matters. Runs the same `beforeSave()`/`afterSave()` hooks as `save()`;
+     * `afterSave()` only when the insert was applied.
      *
      * @param {T} entity The entity to insert.
      * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
@@ -236,10 +259,14 @@ export class Repository<T extends BaseModel> {
 
         const { query, params } = this.buildInsertStatement(entity, options, true);
         const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.options);
+        const applied = extractApplied(rows);
 
-        await entity.afterSave?.();
+        // A write the server did not apply is not a save, so nothing happened to react to
+        if (applied) {
+            await entity.afterSave?.();
+        }
 
-        return extractApplied(rows);
+        return applied;
     }
 
     /**
@@ -388,8 +415,8 @@ export class Repository<T extends BaseModel> {
     }
 
     /**
-     * Find all entities in the database.
-     * @returns {Promise<T[]>} All entities in the database.
+     * Find the first entity in the table, in token order.
+     * @returns {Promise<T | null>} The first entity, or null if the table is empty.
      */
     public async findOne(): Promise<T | null> {
         const query = `SELECT * FROM ${this.entityClass.getTableName()} LIMIT 1`;
@@ -426,7 +453,7 @@ export class Repository<T extends BaseModel> {
      * Unlike `delete()`, this reports whether anything was there: the server
      * takes a Paxos round to decide, which costs more than a plain DELETE — use
      * it only where the answer matters. Runs the same `beforeDelete()`/`afterDelete()`
-     * hooks as `delete()`.
+     * hooks as `delete()`; `afterDelete()` only when the delete was applied.
      *
      * @param {Partial<T>} conditions The conditions to filter the entities.
      * @returns {Promise<boolean>} True if the server applied the delete, false if no row matched.
@@ -440,10 +467,13 @@ export class Repository<T extends BaseModel> {
 
         const { query, params } = this.buildDeleteStatement(conditions);
         const rows = await this.dataSource.executeQuery<RawRow>(`${query} IF EXISTS`, params, this.options);
+        const applied = extractApplied(rows);
 
-        await this.entityClass.afterDelete?.(hookConditions);
+        if (applied) {
+            await this.entityClass.afterDelete?.(hookConditions);
+        }
 
-        return extractApplied(rows);
+        return applied;
     }
 
     /**
@@ -513,7 +543,7 @@ export class Repository<T extends BaseModel> {
      * Unlike `update()`, this never creates the row: the server takes a Paxos
      * round to decide, which costs more than a plain UPDATE — use it only where
      * the upsert would be a bug. Runs the same `beforeUpdate()`/`afterUpdate()`
-     * hooks as `update()`.
+     * hooks as `update()`; `afterUpdate()` only when the update was applied.
      *
      * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
      * @param {Partial<T>} values The columns to set and the values to set them to.
@@ -532,10 +562,13 @@ export class Repository<T extends BaseModel> {
 
         const { query, params } = this.buildUpdateStatement(conditions, values, options, true);
         const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.options);
+        const applied = extractApplied(rows);
 
-        await this.entityClass.afterUpdate?.(hookConditions, hookValues);
+        if (applied) {
+            await this.entityClass.afterUpdate?.(hookConditions, hookValues);
+        }
 
-        return extractApplied(rows);
+        return applied;
     }
 
     /**
@@ -1025,12 +1058,12 @@ export class Repository<T extends BaseModel> {
      * Build the SELECT query and parameters shared by `find()`, `findPaged()` and `stream()`.
      * @param {FindOptions} [options] The options including projection, conditions, ordering and limit.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
-     * @returns {{ query: string, params: Array<SimpleConditionValue> }} The query and its parameters.
+     * @returns {{ query: string, params: BindableValue[] }} The query and its parameters.
      */
     private buildSelectQuery(
         options?: FindOptions,
         allowFiltering: boolean = false
-    ): { query: string; params: Array<string | number | Buffer | boolean> } {
+    ): { query: string; params: BindableValue[] } {
         let projection = '*';
 
         if (options?.select !== undefined) {
@@ -1043,7 +1076,7 @@ export class Repository<T extends BaseModel> {
         }
 
         let query = `SELECT ${projection} FROM ${this.entityClass.getTableName()}`;
-        let params: Array<string | number | Buffer | boolean> = [];
+        let params: BindableValue[] = [];
 
         if (options?.where) {
             const { conditionString, params: conditionParams } = this.buildConditionStringAndParams(options.where);
@@ -1395,16 +1428,21 @@ export class Repository<T extends BaseModel> {
      * query narrower than the table — are skipped, so the property keeps its
      * constructor default or stays undefined.
      *
+     * CQL folds unquoted identifiers to lowercase, so the driver returns
+     * `firstname` for a column declared as `firstName`; the exact name is tried
+     * first, for a raw query that aliases or quotes it.
+     *
      * @param {any} row The row from the database.
      * @returns {T} The entity.
      */
     private mapRowToEntity(row: any): T {
         const entity = new this.entityClass() as T;
         for (const col of this.entityClass.columns || []) {
-            if (!Object.prototype.hasOwnProperty.call(row, col.name)) {
+            const key = Object.prototype.hasOwnProperty.call(row, col.name) ? col.name : col.name.toLowerCase();
+            if (!Object.prototype.hasOwnProperty.call(row, key)) {
                 continue;
             }
-            const rawValue = row[col.name];
+            const rawValue = row[key];
             (entity as any)[col.name] = this.transformValue(rawValue, col.type);
         }
         return entity;

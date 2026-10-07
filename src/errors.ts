@@ -301,7 +301,8 @@ export class InvalidQueryError extends ScyllormError {
     static invalidConditionValue(column: string, entity: string, operator: string, value: unknown): InvalidQueryError {
         return new InvalidQueryError(
             `Invalid value of type ${typeof value} for operator ${operator} on column ${quote(column)} ` +
-                `of entity ${entity}. A condition value must be a string, number, boolean or Buffer.`
+                `of entity ${entity}. A condition value must be a string, number, boolean, bigint, Buffer, Date or ` +
+                'a cassandra-driver value type such as Long or Uuid.'
         );
     }
 

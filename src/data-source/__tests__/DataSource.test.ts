@@ -2,13 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DataSource } from '../DataSource';
 
 // Mock the cassandra-driver module
-vi.mock('cassandra-driver', () => {
+vi.mock('cassandra-driver', async (importOriginal) => {
     class MockClient {
         connect = vi.fn().mockResolvedValue(undefined);
         shutdown = vi.fn().mockResolvedValue(undefined);
         execute = vi.fn().mockResolvedValue({ rows: [] });
     }
+    // Partial mock: the real value types (`types.Long`, `types.Uuid`, …) stay available
     return {
+        ...(await importOriginal<typeof import('cassandra-driver')>()),
         Client: MockClient,
         errors: {
             NoHostAvailableError: class NoHostAvailableError extends Error {},
@@ -51,6 +53,19 @@ describe('DataSource', () => {
     });
 
     describe('shutdown()', () => {
+        it('should connect a fresh driver client when initialized again after shutdown', async () => {
+            await ds.initialize();
+            const first = (ds as any).client;
+
+            await ds.shutdown();
+            await ds.initialize();
+
+            expect((ds as any).client).not.toBe(first);
+            expect(first.connect).toHaveBeenCalledTimes(1);
+            expect((ds as any).client.connect).toHaveBeenCalledTimes(1);
+            expect(ds.isConnected()).toBe(true);
+        });
+
         it('should reset connected flag to false', async () => {
             await ds.initialize();
             expect(ds.isConnected()).toBe(true);

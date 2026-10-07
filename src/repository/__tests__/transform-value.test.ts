@@ -7,13 +7,15 @@ import { Column } from '../../decorators/Column';
 import { PrimaryKeyColumn } from '../../decorators/PrimaryKey';
 
 // Mock cassandra-driver
-vi.mock('cassandra-driver', () => {
+vi.mock('cassandra-driver', async (importOriginal) => {
     class MockClient {
         connect = vi.fn().mockResolvedValue(undefined);
         shutdown = vi.fn().mockResolvedValue(undefined);
         execute = vi.fn().mockResolvedValue({ rows: [] });
     }
+    // Partial mock: the real value types (`types.Long`, `types.Uuid`, …) stay available
     return {
+        ...(await importOriginal<typeof import('cassandra-driver')>()),
         Client: MockClient,
         errors: {
             NoHostAvailableError: class extends Error {},
@@ -171,5 +173,35 @@ describe('transformValue()', () => {
         const results = await repo.find();
         expect(results[0].id).toBe('550e8400-e29b-41d4-a716-446655440000');
         expect(typeof results[0].id).toBe('string');
+    });
+});
+
+@Entity('camel_case_test')
+class CamelCaseEntity extends BaseModel {
+    @PrimaryKeyColumn('INT')
+    userId: number;
+
+    @Column('TEXT')
+    firstName: string;
+}
+
+describe('mapRowToEntity() column name folding', () => {
+    function repoReturning(rows: unknown[]): Repository<CamelCaseEntity> {
+        const ds = new DataSource({ contactPoints: ['localhost'], localDataCenter: 'datacenter1' });
+        (ds as any).executeQuery = vi.fn().mockResolvedValue(rows);
+        return ds.getRepository<CamelCaseEntity>(CamelCaseEntity);
+    }
+
+    it('reads a camelCase property from the lowercased column the server returns', async () => {
+        const [found] = await repoReturning([{ userid: 7, firstname: 'Ana' }]).find();
+
+        expect(found.userId).toBe(7);
+        expect(found.firstName).toBe('Ana');
+    });
+
+    it('prefers the exact name when the row carries it, as a quoted raw query returns it', async () => {
+        const [found] = await repoReturning([{ userId: 7, firstName: 'Exact', firstname: 'Folded' }]).find();
+
+        expect(found.firstName).toBe('Exact');
     });
 });

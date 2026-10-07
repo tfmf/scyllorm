@@ -2,14 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DataSource } from '../DataSource';
 
 // Mock the cassandra-driver module
-vi.mock('cassandra-driver', () => {
+vi.mock('cassandra-driver', async (importOriginal) => {
     class MockClient {
         connect = vi.fn().mockResolvedValue(undefined);
         shutdown = vi.fn().mockResolvedValue(undefined);
         execute = vi.fn().mockResolvedValue({ rows: [] });
     }
 
+    // Partial mock: the real value types (`types.Long`, `types.Uuid`, …) stay available
     return {
+        ...(await importOriginal<typeof import('cassandra-driver')>()),
         Client: MockClient,
         errors: {
             NoHostAvailableError: class NoHostAvailableError extends Error {},
@@ -99,14 +101,17 @@ describe('DataSource retry/reconnect paths', () => {
         expect(client.execute).toHaveBeenCalledTimes(2);
     });
 
-    it('reconnects (shutdown + connect) when running a query while not connected', async () => {
+    it('reconnects on a fresh client (shutdown + new connect) when running a query while not connected', async () => {
         const client = clientOf(ds);
         expect(ds.isConnected()).toBe(false);
 
         const result = await ds.executeQuery('SELECT * FROM test', []);
 
+        // The driver refuses to connect a shut-down Client, so the reconnect must use a fresh one
         expect(client.shutdown).toHaveBeenCalledTimes(1);
-        expect(client.connect).toHaveBeenCalledTimes(1);
+        expect(client.connect).not.toHaveBeenCalled();
+        expect(clientOf(ds)).not.toBe(client);
+        expect(clientOf(ds).connect).toHaveBeenCalledTimes(1);
         expect(ds.isConnected()).toBe(true);
         expect(result).toEqual([]);
     });

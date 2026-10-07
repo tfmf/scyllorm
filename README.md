@@ -540,7 +540,8 @@ const deleted = await repository.deleteIfExists({ id: 1, first_name: 'John' }); 
 
 The server takes a Paxos round to decide, which costs more than a plain write —
 reach for these only where the race (or the upsert) is the bug. They run the
-same lifecycle hooks as their plain counterparts, and `insertIfNotExists()` and
+same lifecycle hooks as their plain counterparts — except that an `after*` hook
+only runs when the write was applied — and `insertIfNotExists()` and
 `updateIfExists()` accept the same options (`ttl` included).
 
 ### 13. Batch Writes 📦
