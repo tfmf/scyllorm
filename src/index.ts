@@ -31,8 +31,10 @@ export {
 export {
     BatchStatement,
     BindableValue,
+    ConcurrencyOptions,
     Condition,
     ConsistencyOptions,
+    DeleteOptions,
     FindOptions,
     NestedConditions,
     OperatorType,

@@ -56,3 +56,15 @@ jobs:
           name: coverage-report
           path: coverage/
           retention-days: 14
+
+  # The unit suite mocks the driver, so server behavior (identifier folding, CQL
+  # the server refuses) only shows up here. GitHub's Ubuntu runners ship Docker.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - run: npm install
+      - run: npm run test:e2e

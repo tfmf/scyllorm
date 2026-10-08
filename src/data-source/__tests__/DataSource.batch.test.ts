@@ -63,7 +63,7 @@ describe('DataSource.executeBatch()', () => {
         await ds.executeBatch(statements);
 
         expect(client.batch).toHaveBeenCalledTimes(1);
-        expect(client.batch).toHaveBeenCalledWith(statements, { prepare: true });
+        expect(client.batch).toHaveBeenCalledWith(statements, { prepare: true, counter: false, isIdempotent: true });
     });
 
     it('forwards caller-supplied query options', async () => {
@@ -72,7 +72,12 @@ describe('DataSource.executeBatch()', () => {
 
         await ds.executeBatch(statements, { prepare: true, consistency: 6 });
 
-        expect(client.batch).toHaveBeenCalledWith(statements, { prepare: true, consistency: 6 });
+        expect(client.batch).toHaveBeenCalledWith(statements, {
+            prepare: true,
+            consistency: 6,
+            counter: false,
+            isIdempotent: true,
+        });
     });
 
     it('throws InvalidQueryError on an empty batch without touching the driver', async () => {

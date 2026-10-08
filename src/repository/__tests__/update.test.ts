@@ -70,10 +70,7 @@ function setup<T extends typeof BaseModel & (new () => InstanceType<T>)>(entityC
 describe('Repository.update()', () => {
     it('produces byte-exact CQL and param order for a multi-column SET and multi-column WHERE', async () => {
         const { repo, executed } = setup(Account);
-        await repo.update(
-            { id: 'abc-123', name: 'Alice' } as never,
-            { name: 'Bob', age: 42 } as never
-        );
+        await repo.update({ id: 'abc-123', name: 'Alice' } as never, { name: 'Bob', age: 42 } as never);
 
         expect(executed[0].query).toBe('UPDATE accounts SET name = ?, age = ? WHERE id = ? AND name = ?');
         expect(executed[0].params).toEqual(['Bob', 42, 'abc-123', 'Alice']);
@@ -119,36 +116,34 @@ describe('Repository.update()', () => {
     it('throws InvalidQueryError when assigning a primary key column, and never calls executeQuery', async () => {
         const { repo, executed } = setup(Account);
 
-        await expect(
-            repo.update({ id: 'abc-123' } as never, { id: 'new-id', name: 'Bob' } as never)
-        ).rejects.toThrow(InvalidQueryError);
+        await expect(repo.update({ id: 'abc-123' } as never, { id: 'new-id', name: 'Bob' } as never)).rejects.toThrow(
+            InvalidQueryError
+        );
         expect(executed.length).toBe(0);
     });
 
     it('throws InvalidQueryError when assigning a COUNTER column, and never calls executeQuery', async () => {
         const { repo, executed } = setup(PageView);
 
-        await expect(repo.update({ id: 'page-1' } as never, { views: 10 } as never)).rejects.toThrow(
-            InvalidQueryError
-        );
+        await expect(repo.update({ id: 'page-1' } as never, { views: 10 } as never)).rejects.toThrow(InvalidQueryError);
         expect(executed.length).toBe(0);
     });
 
     it('throws UnknownColumnError for an undeclared column in values, and never calls executeQuery', async () => {
         const { repo, executed } = setup(Account);
 
-        await expect(
-            repo.update({ id: 'abc-123' } as never, { nonexistent: 'x' } as never)
-        ).rejects.toThrow(UnknownColumnError);
+        await expect(repo.update({ id: 'abc-123' } as never, { nonexistent: 'x' } as never)).rejects.toThrow(
+            UnknownColumnError
+        );
         expect(executed.length).toBe(0);
     });
 
     it('throws UnknownColumnError for an undeclared column in conditions, and never calls executeQuery', async () => {
         const { repo, executed } = setup(Account);
 
-        await expect(
-            repo.update({ nonexistent: 'x' } as never, { name: 'Bob' } as never)
-        ).rejects.toThrow(UnknownColumnError);
+        await expect(repo.update({ nonexistent: 'x' } as never, { name: 'Bob' } as never)).rejects.toThrow(
+            UnknownColumnError
+        );
         expect(executed.length).toBe(0);
     });
 
@@ -164,9 +159,9 @@ describe('Repository.update()', () => {
     it('rejects a conditions key shaped as an injection attempt, and never calls executeQuery', async () => {
         const { repo, executed } = setup(Account);
 
-        await expect(
-            repo.update({ "id = 'x' OR '1'='1'": 'v' } as never, { name: 'Bob' } as never)
-        ).rejects.toThrow(InvalidQueryError);
+        await expect(repo.update({ "id = 'x' OR '1'='1'": 'v' } as never, { name: 'Bob' } as never)).rejects.toThrow(
+            InvalidQueryError
+        );
         expect(executed.length).toBe(0);
     });
 
@@ -216,9 +211,7 @@ describe('Repository.update()', () => {
     it('throws InvalidQueryError for a value that is null on a condition (WHERE cannot bind null)', async () => {
         const { repo, executed } = setup(Account);
 
-        await expect(repo.update({ id: null } as never, { name: 'Bob' } as never)).rejects.toThrow(
-            InvalidQueryError
-        );
+        await expect(repo.update({ id: null } as never, { name: 'Bob' } as never)).rejects.toThrow(InvalidQueryError);
         expect(executed.length).toBe(0);
     });
 

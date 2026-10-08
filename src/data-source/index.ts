@@ -1,2 +1,2 @@
-export * from "./ConnectionOptions";
-export * from "./DataSource";
+export * from './ConnectionOptions';
+export * from './DataSource';
