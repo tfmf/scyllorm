@@ -130,16 +130,16 @@ describe('new operators: Between, Contains, ContainsKey', () => {
 
     describe('malformed Between/Contains conditions throw', () => {
         it('Between with non-array value throws', async () => {
-            await expect(
-                repo.find({ where: { age: { operator: 'BETWEEN', value: 5 } as never } })
-            ).rejects.toThrow(InvalidQueryError);
+            await expect(repo.find({ where: { age: { operator: 'BETWEEN', value: 5 } as never } })).rejects.toThrow(
+                InvalidQueryError
+            );
             expect(executed.length).toBe(0);
         });
 
         it('Between with single-element array throws', async () => {
-            await expect(
-                repo.find({ where: { age: { operator: 'BETWEEN', value: [1] } as never } })
-            ).rejects.toThrow(InvalidQueryError);
+            await expect(repo.find({ where: { age: { operator: 'BETWEEN', value: [1] } as never } })).rejects.toThrow(
+                InvalidQueryError
+            );
             expect(executed.length).toBe(0);
         });
 
@@ -165,9 +165,9 @@ describe('new operators: Between, Contains, ContainsKey', () => {
         });
 
         it('Contains with a non-bindable value throws', async () => {
-            await expect(
-                repo.find({ where: { tags: { operator: 'CONTAINS', value: {} } as never } })
-            ).rejects.toThrow(InvalidQueryError);
+            await expect(repo.find({ where: { tags: { operator: 'CONTAINS', value: {} } as never } })).rejects.toThrow(
+                InvalidQueryError
+            );
             expect(executed.length).toBe(0);
         });
 

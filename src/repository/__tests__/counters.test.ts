@@ -135,15 +135,12 @@ describe('increment() / decrement()', () => {
         expect(executed.length).toBe(0);
     });
 
-    it.each([1.5, NaN, Infinity, -Infinity, 2 ** 53])(
-        'rejects a non-safe-integer delta: %s',
-        async (by) => {
-            await expect(repo.increment({ id: 'a' }, 'views', by)).rejects.toThrow(InvalidQueryError);
-            await expect(repo.decrement({ id: 'a' }, 'views', by)).rejects.toThrow(InvalidQueryError);
+    it.each([1.5, NaN, Infinity, -Infinity, 2 ** 53])('rejects a non-safe-integer delta: %s', async (by) => {
+        await expect(repo.increment({ id: 'a' }, 'views', by)).rejects.toThrow(InvalidQueryError);
+        await expect(repo.decrement({ id: 'a' }, 'views', by)).rejects.toThrow(InvalidQueryError);
 
-            expect(executed.length).toBe(0);
-        }
-    );
+        expect(executed.length).toBe(0);
+    });
 
     it('rejects a string delta', async () => {
         await expect(repo.increment({ id: 'a' }, 'views', '5' as never)).rejects.toThrow(InvalidQueryError);
@@ -187,9 +184,7 @@ describe('increment() / decrement()', () => {
     });
 
     it('rejects an injection attempt disguised as a column name', async () => {
-        await expect(
-            repo.increment({ id: 'a' }, 'views = views + 1; DROP TABLE x' as never)
-        ).rejects.toMatchObject({
+        await expect(repo.increment({ id: 'a' }, 'views = views + 1; DROP TABLE x' as never)).rejects.toMatchObject({
             code: 'SCYLLORM_INVALID_QUERY',
         });
 

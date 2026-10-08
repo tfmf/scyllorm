@@ -300,6 +300,18 @@ throws `InvalidQueryError`.
 const names = await repository.find({ select: ['first_name', 'last_name'], where: { id: 1 } });
 ```
 
+#### Latest N per partition 🥇
+
+`perPartitionLimit` renders `PER PARTITION LIMIT ?` — the first N rows of *each*
+partition, in clustering order, in a single query. It is validated like `limit` — an
+integer from 1 to 2147483647, or a numeric string of one (else `InvalidQueryError`) — and
+can sit next to `limit`:
+
+```typescript
+// latest 3 readings per sensor, for these sensors (clustering order: newest first)
+const latest = await readings.find({ where: { sensor_id: In([1, 2, 3]) }, perPartitionLimit: 3 });
+```
+
 ### 7. Handle Large Result Sets 📄
 
 ScyllaDB returns results one page at a time (5000 rows by default). `find()`
@@ -528,6 +540,20 @@ await repository.save(employee, { ttl: 3600 });
 await repository.update({ id: 1 }, { city: 'Berlin' }, { ttl: 60 });
 ```
 
+Writes and deletes also take a `timestamp` in microseconds (a safe integer or a
+`types.Long`), rendered as `USING TIMESTAMP ?` — and as `USING TTL ? AND TIMESTAMP ?`
+next to a `ttl`. The highest timestamp wins, which makes replays and out-of-order
+writes safe. Without one the CQL is unchanged:
+
+```typescript
+await repository.save(employee, { ttl: 3600, timestamp: Date.now() * 1000 });
+await repository.delete({ id: 1, first_name: 'John' }, { timestamp: Date.now() * 1000 });
+```
+
+A lightweight transaction cannot carry a client timestamp, so
+`insertIfNotExists()`, `updateIfExists()` and `deleteIfExists()` reject `timestamp`
+with `InvalidQueryError` before running anything.
+
 When “every write is an upsert” is exactly what you *don’t* want, the
 conditional variants use a lightweight transaction and report whether the
 server applied the write:
@@ -549,8 +575,8 @@ only runs when the write was applied — and `insertIfNotExists()` and
 Every write has a statement-builder twin — `saveStatement()`,
 `updateStatement()`, `deleteStatement()` — that builds the exact CQL and bound
 values the plain call would run, without running it. Hand the statements to
-`dataSource.executeBatch()` and they execute as a single CQL logged batch:
-atomic, so either every statement applies or none does.
+`dataSource.executeBatch()` and they execute as a single CQL logged batch by
+default: atomic, so either every statement applies or none does.
 
 ```typescript
 const repository = dataSource.getRepository(Employee);
@@ -564,11 +590,28 @@ await dataSource.executeBatch([
 
 The builders go through the same column whitelist, write-time validation and
 local rejections as their executing counterparts — a bad statement throws while
-you build it, before the batch even exists — and they accept the same
-`WriteOptions` (`ttl` included). They run **no lifecycle hooks**: nothing
+you build it, before the batch even exists. `saveStatement()` and
+`updateStatement()` accept the same `WriteOptions` (`ttl`, `timestamp`);
+`deleteStatement()` accepts `{ timestamp }`. They run **no lifecycle hooks**: nothing
 executes until the batch is passed to `executeBatch()`, which retries on
-`NoHostAvailableError`/`DriverInternalError` like every other query and throws
+`NoHostAvailableError`/`DriverInternalError` when idempotent (see section 16) and throws
 `InvalidQueryError` on an empty batch.
+
+**Unlogged batches.** Pass `{ logged: false }` to skip the batch log — faster, but
+no atomicity across partitions. Statements are prepared either way.
+
+**Counter batches.** Counters can only be batched with other counters, so use the
+counter statement builders. A batch made only of them is sent as a counter batch
+automatically — a counter batch is not logged, so it is not atomic across
+partitions; mixing them with ordinary statements throws `InvalidQueryError`
+before anything is sent:
+
+```typescript
+await dataSource.executeBatch([
+    counters.incrementStatement({ id: 'home' }, 'views'),
+    counters.decrementStatement({ id: 'old' }, 'views', 2),
+]);
+```
 
 ### 14. Write-Time Validation 🛡
 
@@ -630,6 +673,57 @@ const dataSource = new DataSource({
     logger: myAppLogger,
 });
 ```
+
+### 16. Many Partitions at Once and Retries 🚦
+
+**Bounded concurrency.** To run lots of independent statements, `executeConcurrent()`
+keeps at most `concurrency` (default 100) in flight and returns each statement's rows,
+in order. `saveMany()` does the same for entities, running the hooks per entity:
+
+```typescript
+const rows = await dataSource.executeConcurrent(
+    ids.map((id) => ({ query: 'SELECT * FROM employees WHERE id = ?', params: [id] })),
+    { concurrency: 50 }
+);
+
+await repository.saveMany(employees, { concurrency: 50, ttl: 3600 });
+```
+
+On the first failure nothing new is started, in-flight statements finish, and that
+first error is thrown. A `concurrency` that is not a positive safe integer throws
+`InvalidQueryError`.
+
+**Retries.** `NoHostAvailableError` and `DriverInternalError` are retried up to 3
+times with exponential backoff and jitter (about 50, 100, 200ms) — but **only for
+idempotent statements**: the driver moves a timed-out idempotent statement on to the
+next host, so a `NoHostAvailableError` can arrive after a write was already applied,
+and repeating a non-idempotent one could apply it twice. Reads, `save()`, `update()`, `delete()` and `clear()` are
+idempotent; `increment()`, `decrement()` and the conditional writes (`...IfNotExists`,
+`...IfExists`) are not, and are attempted once. Raw queries are inferred idempotent
+only when they start with `SELECT`; say otherwise with `isIdempotent`:
+
+```typescript
+await repository.runRawQuery(
+    'UPDATE employees SET city = :city WHERE id = :id AND first_name = :name',
+    { city: 'Porto', id: 1, name: 'John' },
+    { isIdempotent: true }
+);
+```
+
+For reads, raw queries and `dataSource.executeQuery()`/`executeConcurrent()` the order is:
+the per-call `isIdempotent`, then the client's `queryOptions.isIdempotent`, then the
+`SELECT` check — so a client-wide `false` also stops reads from being retried. Repository
+writes and counter statements always say for themselves, so a client-wide `true` never
+makes an `increment()` or `incrementStatement()` retried.
+
+Batches are idempotent unless they are counter batches or contain an `IF` condition;
+override with `executeBatch(statements, { isIdempotent })`. The flag is also passed to
+the driver, so speculative executions configured through the client options
+(`policies.speculativeExecution`) only fire for idempotent statements — and so does the
+driver's own retry policy, which on a client timeout, socket error or overloaded response
+moves an idempotent statement on to the next host of the query plan. Pass
+`policies: { retry: new policies.retry.FallthroughRetryPolicy() }` in the client
+options to turn that off.
 
 ### Supported Column Types
 Scyllorm supports the following CQL column types:

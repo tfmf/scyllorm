@@ -38,9 +38,7 @@ describe('@PrimaryKeyColumn with options', () => {
             shardKey: string;
         }
 
-        expect(Sharded.getPrimaryKeys()).toEqual([
-            { name: 'shardKey', type: 'TEXT', options: { partitionKey: true } },
-        ]);
+        expect(Sharded.getPrimaryKeys()).toEqual([{ name: 'shardKey', type: 'TEXT', options: { partitionKey: true } }]);
         expect(Sharded.columns).toEqual([{ name: 'shardKey', type: 'TEXT', options: { partitionKey: true } }]);
     });
 });

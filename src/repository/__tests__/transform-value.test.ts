@@ -81,7 +81,19 @@ describe('transformValue()', () => {
 
         const ds = (repo as any).dataSource;
         ds.executeQuery = vi.fn().mockResolvedValue([
-            { id: 'test-uuid', big_number: longValue, data: null, price: null, count: null, active: null, name: null, ref_id: null, tags: null, categories: null, metadata: null },
+            {
+                id: 'test-uuid',
+                big_number: longValue,
+                data: null,
+                price: null,
+                count: null,
+                active: null,
+                name: null,
+                ref_id: null,
+                tags: null,
+                categories: null,
+                metadata: null,
+            },
         ]);
 
         const results = await repo.find();
@@ -91,11 +103,23 @@ describe('transformValue()', () => {
 
     it('should preserve Buffer for BLOB (no re-encoding)', async () => {
         const repo = createTestRepo();
-        const bufferValue = Buffer.from([0x00, 0xFF, 0x42]);
+        const bufferValue = Buffer.from([0x00, 0xff, 0x42]);
 
         const ds = (repo as any).dataSource;
         ds.executeQuery = vi.fn().mockResolvedValue([
-            { id: 'test-uuid', big_number: null, data: bufferValue, price: null, count: null, active: null, name: null, ref_id: null, tags: null, categories: null, metadata: null },
+            {
+                id: 'test-uuid',
+                big_number: null,
+                data: bufferValue,
+                price: null,
+                count: null,
+                active: null,
+                name: null,
+                ref_id: null,
+                tags: null,
+                categories: null,
+                metadata: null,
+            },
         ]);
 
         const results = await repo.find();
@@ -111,7 +135,19 @@ describe('transformValue()', () => {
 
         const ds = (repo as any).dataSource;
         ds.executeQuery = vi.fn().mockResolvedValue([
-            { id: 'test-uuid', big_number: null, data: null, price: bigDecimalValue, count: null, active: null, name: null, ref_id: null, tags: null, categories: null, metadata: null },
+            {
+                id: 'test-uuid',
+                big_number: null,
+                data: null,
+                price: bigDecimalValue,
+                count: null,
+                active: null,
+                name: null,
+                ref_id: null,
+                tags: null,
+                categories: null,
+                metadata: null,
+            },
         ]);
 
         const results = await repo.find();
@@ -124,7 +160,19 @@ describe('transformValue()', () => {
 
         const ds = (repo as any).dataSource;
         ds.executeQuery = vi.fn().mockResolvedValue([
-            { id: 'test-uuid', big_number: null, data: null, price: null, count: 42, active: null, name: null, ref_id: null, tags: null, categories: null, metadata: null },
+            {
+                id: 'test-uuid',
+                big_number: null,
+                data: null,
+                price: null,
+                count: 42,
+                active: null,
+                name: null,
+                ref_id: null,
+                tags: null,
+                categories: null,
+                metadata: null,
+            },
         ]);
 
         const results = await repo.find();
@@ -139,7 +187,19 @@ describe('transformValue()', () => {
 
         const ds = (repo as any).dataSource;
         ds.executeQuery = vi.fn().mockResolvedValue([
-            { id: 'test-uuid', big_number: null, data: null, price: null, count: null, active: null, name: null, ref_id: null, tags: listValue, categories: setValue, metadata: mapValue },
+            {
+                id: 'test-uuid',
+                big_number: null,
+                data: null,
+                price: null,
+                count: null,
+                active: null,
+                name: null,
+                ref_id: null,
+                tags: listValue,
+                categories: setValue,
+                metadata: mapValue,
+            },
         ]);
 
         const results = await repo.find();
@@ -153,7 +213,19 @@ describe('transformValue()', () => {
 
         const ds = (repo as any).dataSource;
         ds.executeQuery = vi.fn().mockResolvedValue([
-            { id: 'test-uuid', big_number: null, data: undefined, price: null, count: null, active: null, name: null, ref_id: null, tags: null, categories: null, metadata: null },
+            {
+                id: 'test-uuid',
+                big_number: null,
+                data: undefined,
+                price: null,
+                count: null,
+                active: null,
+                name: null,
+                ref_id: null,
+                tags: null,
+                categories: null,
+                metadata: null,
+            },
         ]);
 
         const results = await repo.find();
@@ -167,7 +239,19 @@ describe('transformValue()', () => {
 
         const ds = (repo as any).dataSource;
         ds.executeQuery = vi.fn().mockResolvedValue([
-            { id: uuidObj, big_number: null, data: null, price: null, count: null, active: null, name: null, ref_id: uuidObj, tags: null, categories: null, metadata: null },
+            {
+                id: uuidObj,
+                big_number: null,
+                data: null,
+                price: null,
+                count: null,
+                active: null,
+                name: null,
+                ref_id: uuidObj,
+                tags: null,
+                categories: null,
+                metadata: null,
+            },
         ]);
 
         const results = await repo.find();

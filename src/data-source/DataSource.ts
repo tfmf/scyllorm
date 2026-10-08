@@ -2,9 +2,72 @@ import { Client, ClientOptions, QueryOptions, errors, types } from 'cassandra-dr
 import { ConnectionOptions, Logger } from './ConnectionOptions';
 import { Repository } from '../repository';
 import { BaseModel } from '../model';
-import { BatchStatement, BindableValue } from '../repository/query-utils';
+import { BatchStatement, BindableValue, ConcurrencyOptions, RawRow } from '../repository/query-utils';
 import { buildSchema } from '../schema';
 import { InvalidQueryError } from '../errors';
+
+/** How many queries `executeConcurrent()` and `saveMany()` run at once when the caller does not say. */
+const DEFAULT_CONCURRENCY = 100;
+
+/** A query the caller says nothing about is only assumed safe to run twice if it is a read. */
+const SELECT = /^\s*SELECT\b/i;
+
+/** A conditional (LWT) clause: `IF EXISTS`, `IF NOT EXISTS` or `IF col = ?`. */
+const CONDITIONAL = /\bIF\b/i;
+
+/** String literals and quoted identifiers, where an `if` is text rather than a clause. */
+const QUOTED = /'(?:[^']|'')*'|"(?:[^"]|"")*"/g;
+
+/**
+ * Map items through an async function, at most `concurrency` at a time.
+ *
+ * Results keep the order of `items`. On the first failure no new item starts;
+ * the ones already running are awaited, then that first error is thrown, so
+ * nothing is left in flight once the promise settles.
+ *
+ * @param items The items to map.
+ * @param concurrency How many to run at once; a positive integer.
+ * @param fn The async function to run per item.
+ * @returns The results, in the order of `items`.
+ * @throws {InvalidQueryError} If `concurrency` is not a positive integer.
+ */
+export async function mapConcurrent<I, R>(
+    items: readonly I[],
+    concurrency: number = DEFAULT_CONCURRENCY,
+    fn: (item: I) => Promise<R>
+): Promise<R[]> {
+    if (typeof concurrency !== 'number' || !Number.isSafeInteger(concurrency) || concurrency < 1) {
+        throw InvalidQueryError.invalidConcurrency(concurrency);
+    }
+
+    const results: R[] = new Array(items.length);
+    let next = 0;
+    let failed = false;
+    let failure: unknown;
+
+    const worker = async (): Promise<void> => {
+        while (!failed && next < items.length) {
+            const index = next++;
+
+            try {
+                results[index] = await fn(items[index]);
+            } catch (error) {
+                if (!failed) {
+                    failed = true;
+                    failure = error;
+                }
+            }
+        }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+
+    if (failed) {
+        throw failure;
+    }
+
+    return results;
+}
 
 /**
  * A single page of a result set.
@@ -22,6 +85,7 @@ export class DataSource {
     // The driver refuses to connect a Client that has been shut down, so the next initialize() replaces it
     private shutDown: boolean = false;
     private readonly MAX_RETRIES = 3; // Maximum number of retries
+    private readonly RETRY_BASE_DELAY_MS = 50; // First backoff; doubles on every retry
     private readonly clientOptions: ClientOptions;
     private readonly logger: Logger;
 
@@ -160,18 +224,27 @@ export class DataSource {
         options: QueryOptions,
         retries: number = 0
     ): Promise<types.ResultSet> {
-        return this.withRetry(() => this.client.execute(query, params, options), retries);
+        const isIdempotent =
+            options.isIdempotent ?? this.clientOptions.queryOptions?.isIdempotent ?? SELECT.test(query);
+
+        return this.withRetry(
+            () => this.client.execute(query, params, { ...options, isIdempotent }),
+            isIdempotent,
+            retries
+        );
     }
 
     /**
      * Run a driver call with the shared reconnect and retry behavior:
-     * reconnect first if the client is not connected, then retry on
-     * NoHostAvailableError/DriverInternalError up to MAX_RETRIES times.
+     * reconnect first if the client is not connected, then retry an idempotent
+     * call on NoHostAvailableError/DriverInternalError up to MAX_RETRIES times,
+     * with exponential backoff and jitter.
      * @param action The driver call to run.
+     * @param isIdempotent Whether the call is safe to run twice; only then is it retried.
      * @param retries The current retry count.
      * @returns Whatever the driver call resolves to.
      */
-    private async withRetry<T>(action: () => Promise<T>, retries: number = 0): Promise<T> {
+    private async withRetry<T>(action: () => Promise<T>, isIdempotent: boolean, retries: number = 0): Promise<T> {
         if (!this.connected) {
             this.logger.warn('ScyllaDB is not connected. Attempting to reconnect...');
             await this.reconnect();
@@ -179,13 +252,21 @@ export class DataSource {
         try {
             return await action();
         } catch (error) {
+            // The error can arrive after the driver already sent the statement to a host
+            // that applied it, so only a statement that is safe to run twice is tried again
             if (
+                isIdempotent &&
                 (error instanceof errors.NoHostAvailableError || error instanceof errors.DriverInternalError) &&
                 retries < this.MAX_RETRIES
             ) {
                 retries++;
                 this.logger.warn(`Connection lost. Retrying query attempt ${retries}/${this.MAX_RETRIES}.`);
-                return this.withRetry(action, retries);
+
+                // 50ms, 100ms, 200ms, each scaled to 50-100% so clients that failed together retry apart
+                const delay = this.RETRY_BASE_DELAY_MS * 2 ** (retries - 1);
+                await new Promise((resolve) => setTimeout(resolve, delay * (0.5 + Math.random() / 2)));
+
+                return this.withRetry(action, isIdempotent, retries);
             } else {
                 this.logger.error(`Query failed: ${error}`);
                 throw error;
@@ -194,25 +275,86 @@ export class DataSource {
     }
 
     /**
-     * Execute a batch of statements atomically as a CQL logged batch.
+     * Execute a batch of statements, atomically as a CQL logged batch by default.
+     * An unlogged or counter batch is not atomic across partitions.
      *
      * Build the statements with the `Repository` statement builders —
-     * `saveStatement()`, `updateStatement()`, `deleteStatement()` — which run
-     * no lifecycle hooks; nothing is executed until the batch is passed here.
-     * Reconnects and retries on NoHostAvailableError/DriverInternalError, the
-     * same as every other query.
+     * `saveStatement()`, `updateStatement()`, `deleteStatement()`,
+     * `incrementStatement()`, `decrementStatement()` — which run no lifecycle
+     * hooks; nothing is executed until the batch is passed here.
+     *
+     * Pass `{ logged: false }` for a batch confined to one partition, which
+     * needs no batch log. A batch of counter statements is sent as a counter
+     * batch on its own; mixing them with other statements throws, as CQL
+     * requires. The batch is retried on NoHostAvailableError/DriverInternalError
+     * only if it is idempotent: no counter and no `IF` condition, unless
+     * `options.isIdempotent` says otherwise.
      *
      * @param statements The statements to run, at least one.
-     * @param options Query options, such as preparation settings.
+     * @param options Query options, such as `logged` or `consistency`; statements are prepared unless
+     *     `prepare: false` is passed.
      * @returns A promise that resolves when the batch has been applied.
-     * @throws {InvalidQueryError} If `statements` is empty.
+     * @throws {InvalidQueryError} If `statements` is empty or mixes counter updates with other statements.
      */
-    public async executeBatch(statements: BatchStatement[], options: QueryOptions = { prepare: true }): Promise<void> {
+    public async executeBatch(statements: BatchStatement[], options: QueryOptions = {}): Promise<void> {
         if (statements.length === 0) {
             throw InvalidQueryError.emptyBatch();
         }
 
-        await this.withRetry(() => this.client.batch(statements, options));
+        const counters = statements.filter((statement) => statement.counter).length;
+
+        if (counters > 0 && counters < statements.length) {
+            throw InvalidQueryError.mixedCounterBatch();
+        }
+
+        const counter = options.counter ?? counters > 0;
+        // A counter moves again when replayed; a conditional write may report a different outcome
+        const isIdempotent =
+            options.isIdempotent ??
+            (!counter && !statements.some((statement) => CONDITIONAL.test(statement.query.replace(QUOTED, ''))));
+        // The driver only reads query and params; the counter marker is ours
+        const queries = statements.map(({ query, params }) => ({ query, params }));
+
+        await this.withRetry(
+            () => this.client.batch(queries, { prepare: true, ...options, counter, isIdempotent }),
+            isIdempotent
+        );
+    }
+
+    /**
+     * Execute statements in parallel, at most `concurrency` at a time.
+     *
+     * The recommended way to touch many partitions: parallel single-partition
+     * queries rather than a multi-partition `IN` or batch. Each statement runs
+     * like `executeQuery()` — prepared, every page read, reconnect and retry
+     * included. A statement is retried only if it is idempotent, resolved like
+     * `executeQuery()`: `options.isIdempotent`, then the client's
+     * `queryOptions.isIdempotent`, then whether it is a `SELECT` — pass
+     * `isIdempotent: true` for writes from `saveStatement()`, `updateStatement()`
+     * or `deleteStatement()`. A counter statement is never retried.
+     *
+     * On the first failure no new statement starts; the ones already running
+     * finish, then the error is thrown. Statements that ran are not undone.
+     *
+     * @param statements The statements to run, usually from the `Repository` statement builders.
+     * @param options Query options applied to every statement, plus `concurrency` (100 by default).
+     * @returns The rows of each statement, in the order of `statements`; empty for writes.
+     * @throws {InvalidQueryError} If `concurrency` is not a positive integer.
+     */
+    public async executeConcurrent<T extends object = RawRow>(
+        statements: BatchStatement[],
+        options: QueryOptions & ConcurrencyOptions = {}
+    ): Promise<T[][]> {
+        const { concurrency, ...queryOptions } = options;
+
+        // A counter moves again when replayed, whatever the caller or the client default says
+        return mapConcurrent(statements, concurrency, ({ query, params, counter }) =>
+            this.executeQuery<T>(query, params, {
+                prepare: true,
+                ...queryOptions,
+                ...(counter && { isIdempotent: false }),
+            })
+        );
     }
 
     /**
@@ -245,7 +387,8 @@ export class DataSource {
     public async synchronize(entities: Array<typeof BaseModel>): Promise<void> {
         for (const entity of entities) {
             for (const statement of buildSchema(entity)) {
-                await this.executeQuery(statement, [], { prepare: false });
+                // IF NOT EXISTS makes every statement safe to run twice
+                await this.executeQuery(statement, [], { prepare: false, isIdempotent: true });
             }
         }
     }

@@ -1,5 +1,5 @@
 import { QueryOptions, types } from 'cassandra-driver';
-import { DataSource, PagedResult } from '../data-source/DataSource';
+import { DataSource, PagedResult, mapConcurrent } from '../data-source/DataSource';
 import { BaseModel } from '../model/BaseModel';
 import { EntityNotFoundError, InvalidQueryError, QueryFailedError, UnknownColumnError } from '../errors';
 import { BoundQuery, bindNamedParameters } from './named-parameters';
@@ -7,7 +7,9 @@ import { validateColumnValue } from './type-validation';
 import {
     BatchStatement,
     BindableValue,
+    ConcurrencyOptions,
     ConsistencyOptions,
+    DeleteOptions,
     SimpleConditionValue,
     NestedConditions,
     FindOptions,
@@ -224,7 +226,7 @@ export class Repository<T extends BaseModel> {
      * @param {T} entity - The entity to save.
      * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
      * @returns {Promise<T>} The saved entity.
-     * @throws {InvalidQueryError} If `ttl` is not an integer from 1 to 2147483647.
+     * @throws {InvalidQueryError} If `ttl` is not an integer from 1 to 2147483647, or `timestamp` is invalid.
      * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
      */
     public async save(entity: T, options?: WriteOptions): Promise<T> {
@@ -233,11 +235,32 @@ export class Repository<T extends BaseModel> {
         await entity.beforeSave?.();
 
         const { query, params } = this.buildInsertStatement(entity, options);
-        await this.dataSource.executeQuery<never>(query, params, this.consistencyQueryOptions(options));
+        await this.dataSource.executeQuery<never>(query, params, this.writeQueryOptions(options, true));
 
         await entity.afterSave?.();
 
         return entity;
+    }
+
+    /**
+     * Save many entities in parallel, at most `concurrency` at a time.
+     *
+     * Runs `save()` per entity, hooks included — the way to write many
+     * partitions at once, where a multi-partition batch would only add load.
+     * On the first failure no new save starts; the ones already running
+     * finish, then the error is thrown. Entities already saved stay saved.
+     *
+     * @param {T[]} entities The entities to save.
+     * @param {WriteOptions & ConcurrencyOptions} [options] The write options for every save, plus
+     *     `concurrency` (100 by default).
+     * @returns {Promise<T[]>} The saved entities, in the order given.
+     * @throws {InvalidQueryError} If `concurrency` is not a positive integer, or as `save()` does.
+     * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
+     */
+    public async saveMany(entities: T[], options?: WriteOptions & ConcurrencyOptions): Promise<T[]> {
+        const { concurrency, ...writeOptions } = options ?? {};
+
+        return mapConcurrent(entities, concurrency, (entity) => this.save(entity, writeOptions));
     }
 
     /**
@@ -252,14 +275,16 @@ export class Repository<T extends BaseModel> {
      * @param {T} entity The entity to insert.
      * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
      * @returns {Promise<boolean>} True if the server applied the insert, false if the row already existed.
-     * @throws {InvalidQueryError} If `ttl` is not an integer from 1 to 2147483647.
+     * @throws {InvalidQueryError} If `ttl` is not an integer from 1 to 2147483647, or `timestamp` is set.
      * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
      */
     public async insertIfNotExists(entity: T, options?: WriteOptions): Promise<boolean> {
+        // Checked before the hook: a call bound to fail should not run it
+        this.assertNoTimestamp(options);
         await entity.beforeSave?.();
 
         const { query, params } = this.buildInsertStatement(entity, options, true);
-        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.consistencyQueryOptions(options));
+        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.writeQueryOptions(options, false));
         const applied = extractApplied(rows);
 
         // A write the server did not apply is not a save, so nothing happened to react to
@@ -280,7 +305,7 @@ export class Repository<T extends BaseModel> {
      * @param {T} entity The entity to build the INSERT for.
      * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
      * @returns {BatchStatement} The CQL and the values bound to its placeholders.
-     * @throws {InvalidQueryError} If `ttl` is not an integer from 1 to 2147483647.
+     * @throws {InvalidQueryError} If `ttl` is not an integer from 1 to 2147483647, or `timestamp` is invalid.
      * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
      */
     public saveStatement(entity: T, options?: WriteOptions): BatchStatement {
@@ -318,12 +343,9 @@ export class Repository<T extends BaseModel> {
 
         // For INSERT the grammar puts USING at the end, after IF NOT EXISTS —
         // the opposite of UPDATE, where it follows the table name
-        if (options?.ttl !== undefined) {
-            query += ' USING TTL ?';
-            params.push(this.assertTtl(options.ttl));
-        }
+        const using = this.buildUsing(options);
 
-        return { query, params };
+        return { query: query + using.clause, params: [...params, ...using.params] };
     }
 
     /**
@@ -435,16 +457,16 @@ export class Repository<T extends BaseModel> {
      * raw-query family.
      *
      * @param {Partial<T>} conditions The conditions to filter the entities.
-     * @param {ConsistencyOptions} [options] The query options, such as `consistency`.
+     * @param {DeleteOptions} [options] The query options, such as `consistency` or `timestamp`.
      * @returns {Promise<void>}
      */
-    public async delete(conditions: Partial<T>, options?: ConsistencyOptions): Promise<void> {
+    public async delete(conditions: Partial<T>, options?: DeleteOptions): Promise<void> {
         const hookConditions = conditions as Record<string, unknown>;
 
         await this.entityClass.beforeDelete?.(hookConditions);
 
-        const { query, params } = this.buildDeleteStatement(conditions);
-        await this.dataSource.executeQuery<never>(query, params, this.consistencyQueryOptions(options));
+        const { query, params } = this.buildDeleteStatement(conditions, options);
+        await this.dataSource.executeQuery<never>(query, params, this.writeQueryOptions(options, true));
 
         await this.entityClass.afterDelete?.(hookConditions);
     }
@@ -460,19 +482,20 @@ export class Repository<T extends BaseModel> {
      * @param {Partial<T>} conditions The conditions to filter the entities.
      * @param {ConsistencyOptions} [options] The query options, such as `consistency`.
      * @returns {Promise<boolean>} True if the server applied the delete, false if no row matched.
-     * @throws {InvalidQueryError} If `conditions` is empty or carries a null value.
+     * @throws {InvalidQueryError} If `conditions` is empty or carries a null value, or `timestamp` is set.
      * @throws {UnknownColumnError} If a column is not declared on the entity.
      */
     public async deleteIfExists(conditions: Partial<T>, options?: ConsistencyOptions): Promise<boolean> {
         const hookConditions = conditions as Record<string, unknown>;
 
+        this.assertNoTimestamp(options);
         await this.entityClass.beforeDelete?.(hookConditions);
 
         const { query, params } = this.buildDeleteStatement(conditions);
         const rows = await this.dataSource.executeQuery<RawRow>(
             `${query} IF EXISTS`,
             params,
-            this.consistencyQueryOptions(options)
+            this.writeQueryOptions(options, false)
         );
         const applied = extractApplied(rows);
 
@@ -490,24 +513,31 @@ export class Repository<T extends BaseModel> {
      * the statement is only executed when passed to `DataSource.executeBatch()`.
      *
      * @param {Partial<T>} conditions The conditions to filter the entities.
+     * @param {DeleteOptions} [options] The delete options; only `timestamp` applies to a statement.
      * @returns {BatchStatement} The CQL and the values bound to its placeholders.
-     * @throws {InvalidQueryError} If `conditions` is empty or carries a null value.
+     * @throws {InvalidQueryError} If `conditions` is empty or carries a null value, or `timestamp` is invalid.
      * @throws {UnknownColumnError} If a column is not declared on the entity.
      */
-    public deleteStatement(conditions: Partial<T>): BatchStatement {
-        return this.buildDeleteStatement(conditions);
+    public deleteStatement(conditions: Partial<T>, options?: DeleteOptions): BatchStatement {
+        return this.buildDeleteStatement(conditions, options);
     }
 
     /**
-     * Build the DELETE shared by `delete()` and `deleteStatement()`.
+     * Build the DELETE shared by `delete()`, `deleteStatement()` and `deleteIfExists()`.
      *
      * @param {Partial<T>} conditions The conditions to filter the entities.
+     * @param {DeleteOptions} [options] The delete options; `timestamp` renders `USING TIMESTAMP ?`.
      * @returns {BatchStatement} The CQL and the values bound to its placeholders.
      */
-    private buildDeleteStatement(conditions: Partial<T>): BatchStatement {
+    private buildDeleteStatement(conditions: Partial<T>, options?: DeleteOptions): BatchStatement {
         const { conditionString, params } = this.buildEqualityConditions(conditions, 'delete() conditions');
+        // For DELETE, as for UPDATE, USING follows the table name
+        const using = this.buildUsing({ timestamp: options?.timestamp });
 
-        return { query: `DELETE FROM ${this.entityClass.getTableName()} WHERE ${conditionString}`, params };
+        return {
+            query: `DELETE FROM ${this.entityClass.getTableName()}${using.clause} WHERE ${conditionString}`,
+            params: [...using.params, ...params],
+        };
     }
 
     /**
@@ -527,7 +557,7 @@ export class Repository<T extends BaseModel> {
      * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
      * @returns {Promise<void>}
      * @throws {InvalidQueryError} If `values` is empty, assigns a primary key or COUNTER column,
-     *     carries an undefined value, or `ttl` is not an integer from 1 to 2147483647.
+     *     carries an undefined value, or `ttl` is not an integer from 1 to 2147483647, or `timestamp` is invalid.
      * @throws {UnknownColumnError} If a column is not declared on the entity.
      * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
      */
@@ -538,7 +568,7 @@ export class Repository<T extends BaseModel> {
         await this.entityClass.beforeUpdate?.(hookConditions, hookValues);
 
         const { query, params } = this.buildUpdateStatement(conditions, values, options);
-        await this.dataSource.executeQuery<never>(query, params, this.consistencyQueryOptions(options));
+        await this.dataSource.executeQuery<never>(query, params, this.writeQueryOptions(options, true));
 
         await this.entityClass.afterUpdate?.(hookConditions, hookValues);
     }
@@ -557,7 +587,7 @@ export class Repository<T extends BaseModel> {
      * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
      * @returns {Promise<boolean>} True if the server applied the update, false if no row matched.
      * @throws {InvalidQueryError} If `values` is empty, assigns a primary key or COUNTER column,
-     *     carries an undefined value, or `ttl` is not an integer from 1 to 2147483647.
+     *     carries an undefined value, or `ttl` is not an integer from 1 to 2147483647, or `timestamp` is set.
      * @throws {UnknownColumnError} If a column is not declared on the entity.
      * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
      */
@@ -565,10 +595,11 @@ export class Repository<T extends BaseModel> {
         const hookConditions = conditions as Record<string, unknown>;
         const hookValues = values as Record<string, unknown>;
 
+        this.assertNoTimestamp(options);
         await this.entityClass.beforeUpdate?.(hookConditions, hookValues);
 
         const { query, params } = this.buildUpdateStatement(conditions, values, options, true);
-        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.consistencyQueryOptions(options));
+        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.writeQueryOptions(options, false));
         const applied = extractApplied(rows);
 
         if (applied) {
@@ -591,7 +622,7 @@ export class Repository<T extends BaseModel> {
      * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
      * @returns {BatchStatement} The CQL and the values bound to its placeholders.
      * @throws {InvalidQueryError} If `values` is empty, assigns a primary key or COUNTER column,
-     *     carries an undefined value, or `ttl` is not an integer from 1 to 2147483647.
+     *     carries an undefined value, or `ttl` is not an integer from 1 to 2147483647, or `timestamp` is invalid.
      * @throws {UnknownColumnError} If a column is not declared on the entity.
      * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
      */
@@ -659,15 +690,9 @@ export class Repository<T extends BaseModel> {
 
         // For UPDATE the grammar puts USING right after the table name, before
         // SET — the opposite of INSERT, where it comes at the end
-        const ttlParams: BindableValue[] = [];
-        let using = '';
+        const using = this.buildUsing(options);
 
-        if (options?.ttl !== undefined) {
-            using = ' USING TTL ?';
-            ttlParams.push(this.assertTtl(options.ttl));
-        }
-
-        let query = `UPDATE ${this.entityClass.getTableName()}${using} SET ${assignments.join(
+        let query = `UPDATE ${this.entityClass.getTableName()}${using.clause} SET ${assignments.join(
             ', '
         )} WHERE ${conditionString}`;
 
@@ -675,7 +700,7 @@ export class Repository<T extends BaseModel> {
             query += ' IF EXISTS';
         }
 
-        return { query, params: [...ttlParams, ...params, ...whereParams] };
+        return { query, params: [...using.params, ...params, ...whereParams] };
     }
 
     /**
@@ -704,6 +729,38 @@ export class Repository<T extends BaseModel> {
      */
     public async decrement(conditions: Partial<T>, column: keyof T & string, by: number = 1): Promise<void> {
         await this.moveCounter(conditions, column, by, '-', 'decrement() conditions');
+    }
+
+    /**
+     * Build the counter UPDATE `increment()` would run, without running it.
+     *
+     * The statement is marked `counter`, so `DataSource.executeBatch()` sends a
+     * batch of them as a counter batch; CQL refuses to mix them with other
+     * statements, and so does `executeBatch()`.
+     *
+     * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
+     * @param {string} column The COUNTER column to move.
+     * @param {number} [by=1] How far to move it; a safe integer, negative to subtract.
+     * @returns {BatchStatement} The CQL and the values bound to its placeholders.
+     * @throws {InvalidQueryError} If the column is not a COUNTER or `by` is not a safe integer.
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     */
+    public incrementStatement(conditions: Partial<T>, column: keyof T & string, by: number = 1): BatchStatement {
+        return this.buildCounterStatement(conditions, column, by, '+', 'increment() conditions');
+    }
+
+    /**
+     * Build the counter UPDATE `decrement()` would run, without running it.
+     *
+     * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
+     * @param {string} column The COUNTER column to move.
+     * @param {number} [by=1] How far to move it; a safe integer, negative to add.
+     * @returns {BatchStatement} The CQL and the values bound to its placeholders.
+     * @throws {InvalidQueryError} If the column is not a COUNTER or `by` is not a safe integer.
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     */
+    public decrementStatement(conditions: Partial<T>, column: keyof T & string, by: number = 1): BatchStatement {
+        return this.buildCounterStatement(conditions, column, by, '-', 'decrement() conditions');
     }
 
     /**
@@ -846,7 +903,10 @@ export class Repository<T extends BaseModel> {
      * @returns {Promise<void>}
      */
     public async clear(): Promise<void> {
-        await this.dataSource.executeQuery<never>(`TRUNCATE ${this.entityClass.getTableName()}`, [], this.options);
+        await this.dataSource.executeQuery<never>(`TRUNCATE ${this.entityClass.getTableName()}`, [], {
+            ...this.options,
+            isIdempotent: true,
+        });
     }
 
     /**
@@ -866,6 +926,29 @@ export class Repository<T extends BaseModel> {
         sign: '+' | '-',
         clause: string
     ): Promise<void> {
+        const { query, params } = this.buildCounterStatement(conditions, key, by, sign, clause);
+
+        // A counter moves again if the update is replayed, so it is never retried
+        await this.dataSource.executeQuery<never>(query, params, { ...this.options, isIdempotent: false });
+    }
+
+    /**
+     * Build the counter UPDATE shared by `increment()`, `decrement()` and their statement builders.
+     *
+     * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
+     * @param {string} key The property name of the COUNTER column.
+     * @param {number} by How far to move the counter.
+     * @param {'+' | '-'} sign Which way `by` is applied.
+     * @param {string} clause How to name the conditions if they turn out to be empty.
+     * @returns {BatchStatement} The CQL and its values, marked `counter`.
+     */
+    private buildCounterStatement(
+        conditions: Partial<T>,
+        key: string,
+        by: number,
+        sign: '+' | '-',
+        clause: string
+    ): BatchStatement {
         const entity = this.entityClass.name;
         const column = this.assertColumn(key);
 
@@ -882,7 +965,7 @@ export class Repository<T extends BaseModel> {
         const { conditionString, params } = this.buildEqualityConditions(conditions, clause);
         const query = `UPDATE ${this.entityClass.getTableName()} SET ${column} = ${column} ${sign} ? WHERE ${conditionString}`;
 
-        await this.dataSource.executeQuery<never>(query, [by, ...params], this.options);
+        return { query, params: [by, ...params], counter: true };
     }
 
     /**
@@ -1111,6 +1194,12 @@ export class Repository<T extends BaseModel> {
             query += ` ORDER BY ${orderStrings.join(', ')}`;
         }
 
+        // The grammar puts PER PARTITION LIMIT right before LIMIT
+        if (options?.perPartitionLimit !== undefined) {
+            query += ' PER PARTITION LIMIT ?';
+            params.push(this.assertLimit(options.perPartitionLimit, 'perPartitionLimit'));
+        }
+
         if (options?.limit !== undefined) {
             const limit = this.assertLimit(options.limit);
 
@@ -1131,12 +1220,49 @@ export class Repository<T extends BaseModel> {
      *     passed, find or raw.
      * @returns {QueryOptions} The options to pass to the driver.
      */
-    private buildQueryOptions(options?: { fetchSize?: number; pageState?: string } & ConsistencyOptions): QueryOptions {
+    private buildQueryOptions(
+        options?: { fetchSize?: number; pageState?: string; isIdempotent?: boolean } & ConsistencyOptions
+    ): QueryOptions {
         return {
             ...this.consistencyQueryOptions(options),
             ...(options?.fetchSize !== undefined && { fetchSize: options.fetchSize }),
             ...(options?.pageState !== undefined && { pageState: options.pageState }),
+            ...(options?.isIdempotent !== undefined && { isIdempotent: options.isIdempotent }),
         };
+    }
+
+    /**
+     * Build the driver query options for a write: `consistencyQueryOptions()`
+     * plus whether the statement is safe to run twice, which decides whether it
+     * is retried.
+     * @param {ConsistencyOptions} [options] Whatever the caller passed.
+     * @param {boolean} isIdempotent False for LWT; true for a plain INSERT, UPDATE or DELETE.
+     * @returns {QueryOptions} The options to pass to the driver.
+     */
+    private writeQueryOptions(options: ConsistencyOptions | undefined, isIdempotent: boolean): QueryOptions {
+        return { ...this.consistencyQueryOptions(options), isIdempotent };
+    }
+
+    /**
+     * Build the `USING` clause of a write from its `ttl` and `timestamp`.
+     * @param {WriteOptions} [options] Whatever the caller passed.
+     * @returns {{ clause: string, params: BindableValue[] }} The clause, with a leading space or empty, and its values.
+     */
+    private buildUsing(options?: WriteOptions): { clause: string; params: BindableValue[] } {
+        const parts: string[] = [];
+        const params: BindableValue[] = [];
+
+        if (options?.ttl !== undefined) {
+            parts.push('TTL ?');
+            params.push(this.assertTtl(options.ttl));
+        }
+
+        if (options?.timestamp !== undefined) {
+            parts.push('TIMESTAMP ?');
+            params.push(this.assertTimestamp(options.timestamp));
+        }
+
+        return { clause: parts.length > 0 ? ` USING ${parts.join(' AND ')}` : '', params };
     }
 
     /**
@@ -1214,13 +1340,14 @@ export class Repository<T extends BaseModel> {
      * actually carry, with a message about what the caller passed.
      *
      * @param {unknown} limit The limit supplied by the caller.
+     * @param {string} [option='limit'] The option it came from, for the error message.
      * @returns {number} The limit to bind.
      */
-    private assertLimit(limit: unknown): number {
+    private assertLimit(limit: unknown, option: string = 'limit'): number {
         const coerced = typeof limit === 'string' ? Number(limit) : limit;
 
         if (typeof coerced !== 'number' || !Number.isInteger(coerced) || coerced <= 0 || coerced > MAX_CQL_INT) {
-            throw InvalidQueryError.invalidLimit(limit, this.entityClass.name);
+            throw InvalidQueryError.invalidLimit(limit, this.entityClass.name, option);
         }
 
         return coerced;
@@ -1243,6 +1370,41 @@ export class Repository<T extends BaseModel> {
         }
 
         return ttl;
+    }
+
+    /**
+     * Resolve a caller-supplied write timestamp to the value to bind, or throw.
+     *
+     * The bind marker is a `bigint`: a fractional or unsafe number would be
+     * silently rounded on encoding, so only a safe integer or a `Long` passes.
+     * A number is bound as a `Long`: unprepared, the driver would guess `double`,
+     * whose 8 bytes the server reads as a timestamp some 150,000 years ahead.
+     *
+     * @param {unknown} timestamp The timestamp supplied by the caller, in microseconds.
+     * @returns {types.Long} The timestamp to bind.
+     */
+    private assertTimestamp(timestamp: unknown): types.Long {
+        if (typeof timestamp === 'number' && Number.isSafeInteger(timestamp)) {
+            return types.Long.fromNumber(timestamp);
+        }
+
+        if (timestamp instanceof types.Long) {
+            return timestamp;
+        }
+
+        throw InvalidQueryError.invalidTimestamp(timestamp, this.entityClass.name);
+    }
+
+    /**
+     * Refuse a write timestamp on a lightweight transaction, which the server
+     * rejects: Paxos picks the timestamp itself.
+     *
+     * @param {WriteOptions} [options] Whatever the caller passed.
+     */
+    private assertNoTimestamp(options?: WriteOptions): void {
+        if (options?.timestamp !== undefined) {
+            throw InvalidQueryError.conditionalTimestamp(this.entityClass.name);
+        }
     }
 
     /**

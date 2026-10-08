@@ -5,6 +5,70 @@ All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes increment the major version.
 
+## [0.7.0] - 2026-10-08
+
+### Added
+
+- **`isIdempotent` forwarded to the driver.** Every statement now tells the driver whether it
+  is safe to repeat, which is what lets speculative execution (configured through
+  `ClientOptions`) kick in. Reads and plain upserts/deletes are idempotent; `increment()`,
+  `decrement()` and the conditional writes are not. `RawQueryOptions.isIdempotent` overrides
+  the inference (a statement is inferred idempotent only when it starts with `SELECT`).
+- **`DataSource.executeConcurrent(statements, { concurrency, ...queryOptions })`** runs many
+  statements with a bounded number in flight (default 100) and returns the rows per statement,
+  in order. On the first failure it starts nothing new, waits for in-flight statements, then
+  throws that error. An invalid `concurrency` throws `InvalidQueryError`.
+- **`Repository.saveMany(entities, { concurrency, ...writeOptions })`** saves entities
+  concurrently, running hooks per entity, and returns the entities.
+- `ConcurrencyOptions` and `DeleteOptions` are now exported types.
+- **`executeBatch()` handles `logged` and counters.** `{ logged: false }` sends an unlogged
+  batch. `Repository.incrementStatement()` and `decrementStatement()` build counter
+  statements, and a batch made only of those is sent as a counter batch automatically.
+  Mixing counter and non-counter statements throws `InvalidQueryError` before any driver call.
+- **Write timestamps.** `WriteOptions.timestamp` (microseconds, safe integer or `types.Long`)
+  renders `USING TIMESTAMP ?`, combined with `ttl` as `USING TTL ? AND TIMESTAMP ?`, and is
+  always bound as a `Long` so it encodes as `bigint` even with `prepare: false`.
+  `delete()` and `deleteStatement()` take `{ timestamp }` through the new `DeleteOptions`.
+  The conditional writes reject a timestamp locally, because a lightweight transaction cannot
+  carry one. Without a timestamp the CQL is unchanged.
+- **`FindOptions.perPartitionLimit`** renders `PER PARTITION LIMIT ?` (after `ORDER BY`,
+  before `LIMIT`) to get the first N rows of every partition.
+
+### Changed
+
+- **Retries only apply to idempotent statements.** Now that statements are marked, the driver
+  moves a timed-out idempotent statement on to the next host and can end with
+  `NoHostAvailableError` after the write was already applied, so retrying everything would
+  risk applying a write twice. `increment()`, `decrement()` and the conditional writes are
+  attempted once, and so are writes sent directly through `DataSource.executeQuery()` and raw
+  writes, unless you pass `isIdempotent: true`.
+- **Retries back off exponentially with jitter** (about 50, 100 and 200ms) instead of
+  retrying immediately.
+- **The driver's own retry policy now sees idempotent statements.** Before, no statement was
+  marked, so the driver treated all of them as non-idempotent. Now reads, `save()`,
+  `update()`, `delete()` and plain batches are marked idempotent, and the driver's default
+  `RetryPolicy` moves them on to the next host of the query plan after a client timeout,
+  socket error or overloaded response (and retries a logged batch after a batch-log write
+  timeout). Set `policies.retry` in the client options to change that.
+- For reads, raw queries and direct `DataSource.executeQuery()`/`executeConcurrent()` calls,
+  idempotence is resolved from
+  the per-call `isIdempotent`, then the client's `queryOptions.isIdempotent`, then whether the
+  query starts with `SELECT`. A client-wide `queryOptions: { isIdempotent: false }` therefore
+  also stops reads from being retried. Repository writes and counter statements always set
+  the flag themselves.
+
+### Fixed
+
+- **`executeBatch()` prepares statements by default even when options are passed.** Passing
+  any options used to drop `prepare: true`, so `{ logged: false }` sent an unprepared batch.
+  An explicit `prepare: false` still wins.
+
+### Hygiene
+
+- `cassandra-driver` is now `^4.10.0`; the `adm-zip` override is removed because the driver
+  pins the patched line itself.
+- The e2e suite runs in CI.
+
 ## [0.6.0] - 2026-10-07
 
 ### Added

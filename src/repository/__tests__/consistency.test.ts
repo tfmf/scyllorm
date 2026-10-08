@@ -71,21 +71,21 @@ describe('per-query consistency', () => {
     it('find() still drops fetchSize and pageState, which only paged reads honor', async () => {
         await repo.find({ consistency, fetchSize: 10, pageState: 'abc' });
 
-        expect(sentOptions()).toEqual({ prepare: true, consistency, pageState: undefined });
+        expect(sentOptions()).toEqual({ prepare: true, consistency, pageState: undefined, isIdempotent: true });
     });
 
     it('findPaged() carries consistency alongside the paging settings', async () => {
         await repo.findPaged({ consistency, fetchSize: 10 });
 
-        expect(sentOptions()).toEqual({ prepare: true, consistency, fetchSize: 10 });
+        expect(sentOptions()).toEqual({ prepare: true, consistency, fetchSize: 10, isIdempotent: true });
     });
 
     it('sends the same options as before when no consistency is given', async () => {
         await repo.save(entity());
         await repo.find();
 
-        expect(execute.mock.calls[0][2]).toEqual({ prepare: true });
-        expect(execute.mock.calls[1][2]).toEqual({ prepare: true, pageState: undefined });
+        expect(execute.mock.calls[0][2]).toEqual({ prepare: true, isIdempotent: true });
+        expect(execute.mock.calls[1][2]).toEqual({ prepare: true, pageState: undefined, isIdempotent: true });
     });
 
     it.each([99, -1, 'localQuorum', null])('rejects the unknown consistency level %j locally', async (bad) => {

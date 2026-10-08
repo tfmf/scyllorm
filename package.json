@@ -1,6 +1,6 @@
 {
     "name": "scyllorm",
-    "version": "0.6.0",
+    "version": "0.7.0",
     "description": "A TypeScript ORM for ScyllaDB",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
@@ -30,7 +30,7 @@
         "prepare": "npm run build"
     },
     "dependencies": {
-        "cassandra-driver": "^4.9.0",
+        "cassandra-driver": "^4.10.0",
         "tslib": "^2.6.3"
     },
     "devDependencies": {
@@ -43,10 +43,5 @@
         "typescript": "~6.0.3",
         "typescript-eslint": "^8.1.0",
         "vitest": "^4.0.18"
-    },
-    "overrides": {
-        "cassandra-driver": {
-            "adm-zip": "^0.6.0"
-        }
     }
 }

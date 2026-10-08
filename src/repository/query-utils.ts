@@ -70,20 +70,43 @@ export interface FindOptions extends ConsistencyOptions {
     orderBy?: { [column: string]: 'ASC' | 'DESC' };
     /** Must be an integer from 1 to 2147483647 at runtime; anything else throws `InvalidQueryError`. */
     limit?: number;
+    /**
+     * Rows to return per partition, rendered as `PER PARTITION LIMIT ?` — the
+     * "latest N per sensor" query. Validated like `limit`.
+     */
+    perPartitionLimit?: number;
     /** Page size. Only used by `findPaged()` and `stream()`; ignored by `find()`. */
     fetchSize?: number;
     /** Cursor returned by a previous `findPaged()`. Only used by `findPaged()` and `stream()`. */
     pageState?: string;
 }
 
+/** Options for `delete()` and `deleteStatement()`. */
+export interface DeleteOptions extends ConsistencyOptions {
+    /**
+     * The write timestamp in microseconds since the epoch, rendered as
+     * `USING TIMESTAMP ?`. Orders writes inside a batch, and makes a retried
+     * write land with the same timestamp. A safe integer or a `Long`; anything
+     * else throws `InvalidQueryError`. Refused on the LWT variants, which CQL
+     * does not allow it on.
+     */
+    timestamp?: number | types.Long;
+}
+
 /** Options for the write family: `save()`, `update()`, their statement builders and the LWT variants. */
-export interface WriteOptions extends ConsistencyOptions {
+export interface WriteOptions extends DeleteOptions {
     /**
      * Time to live in seconds; the written columns expire once it elapses.
      * Must be a positive integer no larger than 2147483647 at runtime; anything
      * else throws `InvalidQueryError`. Bound as a parameter, never interpolated.
      */
     ttl?: number;
+}
+
+/** Options for the calls that fan work out: `DataSource.executeConcurrent()` and `Repository.saveMany()`. */
+export interface ConcurrencyOptions {
+    /** How many queries run at once; a positive integer, 100 by default. */
+    concurrency?: number;
 }
 
 /** The values for a raw query's `:name` placeholders, keyed by name without the colon. */
@@ -108,6 +131,13 @@ export interface RawQueryOptions extends ConsistencyOptions {
     fetchSize?: number;
     /** Cursor returned by a previous `runRawQueryPaged()`. */
     pageState?: string;
+    /**
+     * Whether the query is safe to run twice. Only idempotent queries are
+     * retried, and only they are eligible for speculative execution. Defaults
+     * to the client's `queryOptions.isIdempotent`, and failing that to true for
+     * a `SELECT` and false for anything else.
+     */
+    isIdempotent?: boolean;
 }
 
 /**
@@ -118,6 +148,12 @@ export interface RawQueryOptions extends ConsistencyOptions {
 export interface BatchStatement {
     query: string;
     params: BindableValue[];
+    /**
+     * Marks a counter update; set by `incrementStatement()` and
+     * `decrementStatement()`. `executeBatch()` sends a batch of these as a
+     * counter batch, and refuses one that mixes them with other statements.
+     */
+    counter?: boolean;
 }
 
 /** A row as the driver returned it, when `raw` is set. */

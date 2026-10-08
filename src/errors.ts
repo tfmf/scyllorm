@@ -252,12 +252,13 @@ export class InvalidQueryError extends ScyllormError {
      *
      * @param {unknown} limit The rejected limit, as supplied.
      * @param {string} entity The name of the entity class the query was built for.
+     * @param {string} [option='limit'] The option it was passed as: `limit` or `perPartitionLimit`.
      * @returns {InvalidQueryError} The error to throw.
      */
-    static invalidLimit(limit: unknown, entity: string): InvalidQueryError {
+    static invalidLimit(limit: unknown, entity: string, option: string = 'limit'): InvalidQueryError {
         return new InvalidQueryError(
-            `Invalid limit ${quote(String(limit))} on entity ${entity}. ` +
-                'A limit must be an integer from 1 to 2147483647, or a numeric string of one.'
+            `Invalid ${option} ${quote(String(limit))} on entity ${entity}. ` +
+                `A ${option} must be an integer from 1 to 2147483647, or a numeric string of one.`
         );
     }
 
@@ -584,6 +585,60 @@ export class InvalidQueryError extends ScyllormError {
         return new InvalidQueryError(
             `Invalid consistency level ${quote(String(consistency))} on entity ${entity}. ` +
                 'Use a value of `consistencies`, such as consistencies.localQuorum.'
+        );
+    }
+
+    /**
+     * Builds the error for a client timestamp the `bigint` bind marker cannot
+     * carry exactly.
+     *
+     * @param {unknown} timestamp The rejected timestamp, as supplied.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidTimestamp(timestamp: unknown, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Invalid timestamp ${quote(String(timestamp))} on entity ${entity}. ` +
+                'A timestamp must be a safe integer or a Long, in microseconds since the epoch.'
+        );
+    }
+
+    /**
+     * Builds the error for a client timestamp on a lightweight transaction,
+     * which CQL refuses: Paxos picks the write's timestamp itself.
+     *
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static conditionalTimestamp(entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Cannot set a timestamp on a conditional write to entity ${entity}. ` +
+                'A lightweight transaction takes its timestamp from Paxos; drop the timestamp option.'
+        );
+    }
+
+    /**
+     * Builds the error for a concurrency limit that is not a positive integer.
+     *
+     * @param {unknown} concurrency The rejected limit, as supplied.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidConcurrency(concurrency: unknown): InvalidQueryError {
+        return new InvalidQueryError(
+            `Invalid concurrency ${quote(String(concurrency))}. Concurrency must be a positive integer.`
+        );
+    }
+
+    /**
+     * Builds the error for a batch mixing counter updates with other
+     * statements, which CQL requires to go in separate batches.
+     *
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static mixedCounterBatch(): InvalidQueryError {
+        return new InvalidQueryError(
+            'Cannot mix counter updates with other statements in one batch. ' +
+                'Run the incrementStatement()/decrementStatement() ones in a batch of their own.'
         );
     }
 }
