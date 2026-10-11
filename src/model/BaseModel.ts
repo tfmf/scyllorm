@@ -22,6 +22,16 @@ export class BaseModel {
     afterSave?(): void | Promise<void>;
 
     /**
+     * Called on every entity built from a row — `find()` and its siblings, and the
+     * raw-query family unless `raw` is set — once its columns are assigned, before it
+     * is returned; a returned promise is awaited, and throwing propagates to the caller.
+     *
+     * Typed to return `unknown` rather than `void | Promise<void>` so that an entity
+     * written before the hook existed, with an `afterLoad()` of its own, still compiles.
+     */
+    afterLoad?(): unknown;
+
+    /**
      * Called by `Repository.update()` before the UPDATE runs; throwing aborts it.
      * Static because an update targets rows by conditions — no entity instance exists.
      */

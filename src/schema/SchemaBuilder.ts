@@ -1,5 +1,6 @@
 import { BaseModel } from '../model/BaseModel';
 import { ColumnType, ColumnOptions } from '../decorators/Column';
+import { columnName } from '../decorators/metadata-utils';
 import { InvalidQueryError, UnknownColumnError } from '../errors';
 
 /**
@@ -8,10 +9,10 @@ import { InvalidQueryError, UnknownColumnError } from '../errors';
  * CQL cannot parameterize identifiers, so this whitelist — not escaping — is
  * the injection barrier for every table, column and index name emitted here.
  */
-const SCHEMA_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SCHEMA_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]*$/;
 
 /** A table name: a schema identifier, optionally qualified by its keyspace (`keyspace.table`). */
-const TABLE_IDENTIFIER = /^([A-Za-z_][A-Za-z0-9_]*\.)?[A-Za-z_][A-Za-z0-9_]*$/;
+const TABLE_IDENTIFIER = /^([A-Za-z][A-Za-z0-9_]*\.)?[A-Za-z][A-Za-z0-9_]*$/;
 
 /** Collection types, which need an element type from `options.of` to render. */
 const COLLECTION_TYPES: ReadonlySet<string> = new Set(['LIST', 'SET', 'MAP']);
@@ -97,6 +98,8 @@ function renderType(name: string, type: ColumnType, options: ColumnOptions | und
  * clustering keys those with `clusteringKey: true`, both in declaration order.
  * A `WITH CLUSTERING ORDER BY` clause is appended only when at least one
  * clustering key declares an `order`; unspecified keys render `ASC` there.
+ * Columns render under their `name` option when they declare one, and a
+ * `static: true` column renders `STATIC`, which needs a clustering key.
  *
  * @param {typeof BaseModel} entity The entity class to build the table for.
  * @returns {string} The CREATE TABLE statement.
@@ -126,14 +129,25 @@ export function buildCreateTable(entity: typeof BaseModel): string {
         throw InvalidQueryError.missingPartitionKey(entityName);
     }
 
-    const definitions = (entity.columns ?? []).map(
-        (column) =>
-            `${assertIdentifier('column', column.name, entityName)} ` +
-            renderType(column.name, column.type, column.options, entityName)
-    );
+    const definitions = (entity.columns ?? []).map((column) => {
+        const definition =
+            `${assertIdentifier('column', columnName(column), entityName)} ` +
+            renderType(column.name, column.type, column.options, entityName);
 
-    const partition = partitionKeys.map((key) => assertIdentifier('column', key.name, entityName));
-    const clustering = clusteringKeys.map((key) => assertIdentifier('column', key.name, entityName));
+        if (column.options?.static !== true) {
+            return definition;
+        }
+
+        // Checked locally: the server refuses it, with a message that names no entity
+        if (clusteringKeys.length === 0) {
+            throw InvalidQueryError.staticWithoutClustering(column.name, entityName);
+        }
+
+        return `${definition} STATIC`;
+    });
+
+    const partition = partitionKeys.map((key) => assertIdentifier('column', columnName(key), entityName));
+    const clustering = clusteringKeys.map((key) => assertIdentifier('column', columnName(key), entityName));
     const partitionPart = partition.length === 1 ? partition[0] : `(${partition.join(', ')})`;
     const primaryKey = `PRIMARY KEY (${[partitionPart, ...clustering].join(', ')})`;
 
@@ -147,7 +161,7 @@ export function buildCreateTable(entity: typeof BaseModel): string {
                 throw InvalidQueryError.invalidDirection(order, key.name, entityName);
             }
 
-            return `${key.name} ${order}`;
+            return `${columnName(key)} ${order}`;
         });
 
         statement += ` WITH CLUSTERING ORDER BY (${ordering.join(', ')})`;
@@ -181,7 +195,9 @@ export function buildCreateIndexes(entity: typeof BaseModel): string[] {
         }
 
         const name = assertIdentifier('index', index.name, entityName);
-        const column = assertIdentifier('column', index.column, entityName);
+        // `@Index` names the property, like every other API; the DDL needs the column's database name
+        const definition = (entity.columns ?? []).find((column) => column.name === index.column);
+        const column = assertIdentifier('column', definition ? columnName(definition) : index.column, entityName);
 
         return `CREATE INDEX IF NOT EXISTS ${name} ON ${table} (${column})`;
     });

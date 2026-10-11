@@ -1,12 +1,22 @@
 import { QueryOptions, types } from 'cassandra-driver';
 import { DataSource, PagedResult, mapConcurrent } from '../data-source/DataSource';
 import { BaseModel } from '../model/BaseModel';
-import { EntityNotFoundError, InvalidQueryError, QueryFailedError, UnknownColumnError } from '../errors';
+import { ColumnType } from '../decorators/Column';
+import { columnName } from '../decorators/metadata-utils';
+import {
+    ColumnValidationError,
+    EntityNotFoundError,
+    InvalidQueryError,
+    QueryFailedError,
+    UnknownColumnError,
+} from '../errors';
 import { BoundQuery, bindNamedParameters } from './named-parameters';
 import { validateColumnValue } from './type-validation';
 import {
     BatchStatement,
     BindableValue,
+    CollectionOperation,
+    CollectionUpdate,
     ConcurrencyOptions,
     ConsistencyOptions,
     DeleteOptions,
@@ -17,6 +27,7 @@ import {
     RawQueryOptions,
     RawQueryParams,
     RawRow,
+    UpdateValues,
     WriteOptions,
 } from './query-utils';
 
@@ -49,6 +60,24 @@ const UNQUOTED_IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
 const MAX_CQL_INT = 2147483647;
 
 /**
+ * Per collection update: the column types it applies to, how to name them in an
+ * error, and how it renders its assignment to a column.
+ *
+ * A Map rather than an object literal, so an operation named after an
+ * `Object.prototype` member cannot resolve to one.
+ */
+const COLLECTION_UPDATES: ReadonlyMap<
+    CollectionOperation,
+    { types: ColumnType[]; allowed: string; render: (column: string) => string }
+> = new Map([
+    ['Append', { types: ['LIST', 'SET'], allowed: 'a LIST or SET', render: (c) => `${c} = ${c} + ?` }],
+    ['Prepend', { types: ['LIST'], allowed: 'a LIST', render: (c) => `${c} = ? + ${c}` }],
+    ['Remove', { types: ['LIST', 'SET'], allowed: 'a LIST or SET', render: (c) => `${c} = ${c} - ?` }],
+    ['PutKeys', { types: ['MAP'], allowed: 'a MAP', render: (c) => `${c} = ${c} + ?` }],
+    ['RemoveKeys', { types: ['MAP'], allowed: 'a MAP', render: (c) => `${c} = ${c} - ?` }],
+]);
+
+/**
  * Build the map from property name to the column name emitted in CQL.
  *
  * Validating here rather than per query means a malformed entity fails on its
@@ -62,11 +91,11 @@ function buildColumnMap(entityClass: typeof BaseModel): ReadonlyMap<string, stri
     const folded = new Map<string, string>();
 
     for (const column of entityClass.columns ?? []) {
-        // Tier 3 will resolve an explicit `name` option here; today the two are the same
-        const emitted = column.name;
+        const emitted = columnName(column);
 
-        if (!UNQUOTED_IDENTIFIER.test(emitted)) {
-            throw InvalidQueryError.invalidIdentifier(emitted, entityClass.name);
+        // Checked as a string: a JavaScript caller can pass any `name`, and `test()` would coerce it
+        if (typeof emitted !== 'string' || !UNQUOTED_IDENTIFIER.test(emitted)) {
+            throw InvalidQueryError.invalidIdentifier(String(emitted), entityClass.name);
         }
 
         // CQL folds unquoted identifiers, so two columns differing only by case are one column
@@ -328,11 +357,11 @@ export class Repository<T extends BaseModel> {
         const emitted = [...columnMap.values()];
         const placeholders = keys.map(() => '?').join(', ');
         const params: BindableValue[] = keys.map((key) => {
-            const value = entity[key as keyof T];
+            const value = this.toDatabase(key, entity[key as keyof T]);
 
             this.assertValue(key, value);
 
-            return value as string | number | boolean | Buffer;
+            return value;
         });
 
         let query = `INSERT INTO ${this.entityClass.getTableName()} (${emitted.join(', ')}) VALUES (${placeholders})`;
@@ -359,7 +388,7 @@ export class Repository<T extends BaseModel> {
     public async find(options?: FindOptions, allowFiltering: boolean = false): Promise<T[]> {
         const { query, params } = this.buildSelectQuery(options, allowFiltering);
         const results = await this.dataSource.executeQuery<T>(query, params, this.consistencyQueryOptions(options));
-        return results.map((row) => this.mapRowToEntity(row));
+        return this.loadEntities(results);
     }
 
     /**
@@ -379,7 +408,7 @@ export class Repository<T extends BaseModel> {
         );
 
         return {
-            rows: rows.map((row) => this.mapRowToEntity(row)),
+            rows: await this.loadEntities(rows),
             pageState,
             hasMore: pageState !== undefined,
         };
@@ -399,7 +428,7 @@ export class Repository<T extends BaseModel> {
         const { query, params } = this.buildSelectQuery(options, allowFiltering);
 
         for await (const row of this.dataSource.streamQuery<T>(query, params, this.buildQueryOptions(options))) {
-            yield this.mapRowToEntity(row);
+            yield await this.loadEntity(row);
         }
     }
 
@@ -418,7 +447,7 @@ export class Repository<T extends BaseModel> {
         }
 
         const results = await this.dataSource.executeQuery<T>(query, params, this.options);
-        return results.map((row) => this.mapRowToEntity(row));
+        return this.loadEntities(results);
     }
 
     /**
@@ -434,7 +463,7 @@ export class Repository<T extends BaseModel> {
             query += ' ALLOW FILTERING';
         }
         const results = await this.dataSource.executeQuery<T>(query, params, this.options);
-        return results.length > 0 ? this.mapRowToEntity(results[0]) : null;
+        return results.length > 0 ? this.loadEntity(results[0]) : null;
     }
 
     /**
@@ -444,7 +473,7 @@ export class Repository<T extends BaseModel> {
     public async findOne(): Promise<T | null> {
         const query = `SELECT * FROM ${this.entityClass.getTableName()} LIMIT 1`;
         const results = await this.dataSource.executeQuery<T>(query, [], this.options);
-        return results.length > 0 ? this.mapRowToEntity(results[0]) : null;
+        return results.length > 0 ? this.loadEntity(results[0]) : null;
     }
 
     /**
@@ -553,7 +582,8 @@ export class Repository<T extends BaseModel> {
      * `increment()`/`decrement()` or the raw-query family.
      *
      * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
-     * @param {Partial<T>} values The columns to set and the values to set them to.
+     * @param {UpdateValues<T>} values The columns to set and the values to set them to, or a collection
+     *     update such as `Append()`.
      * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
      * @returns {Promise<void>}
      * @throws {InvalidQueryError} If `values` is empty, assigns a primary key or COUNTER column,
@@ -561,14 +591,18 @@ export class Repository<T extends BaseModel> {
      * @throws {UnknownColumnError} If a column is not declared on the entity.
      * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
      */
-    public async update(conditions: Partial<T>, values: Partial<T>, options?: WriteOptions): Promise<void> {
+    public async update(conditions: Partial<T>, values: UpdateValues<T>, options?: WriteOptions): Promise<void> {
         const hookConditions = conditions as Record<string, unknown>;
         const hookValues = values as Record<string, unknown>;
 
         await this.entityClass.beforeUpdate?.(hookConditions, hookValues);
 
-        const { query, params } = this.buildUpdateStatement(conditions, values, options);
-        await this.dataSource.executeQuery<never>(query, params, this.writeQueryOptions(options, true));
+        const { query, params, isIdempotent } = this.buildUpdateStatement(conditions, values, options);
+        await this.dataSource.executeQuery<never>(
+            query,
+            params,
+            this.writeQueryOptions(options, isIdempotent !== false)
+        );
 
         await this.entityClass.afterUpdate?.(hookConditions, hookValues);
     }
@@ -583,7 +617,8 @@ export class Repository<T extends BaseModel> {
      * hooks as `update()`; `afterUpdate()` only when the update was applied.
      *
      * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
-     * @param {Partial<T>} values The columns to set and the values to set them to.
+     * @param {UpdateValues<T>} values The columns to set and the values to set them to, or a collection
+     *     update such as `Append()`.
      * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
      * @returns {Promise<boolean>} True if the server applied the update, false if no row matched.
      * @throws {InvalidQueryError} If `values` is empty, assigns a primary key or COUNTER column,
@@ -591,7 +626,11 @@ export class Repository<T extends BaseModel> {
      * @throws {UnknownColumnError} If a column is not declared on the entity.
      * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
      */
-    public async updateIfExists(conditions: Partial<T>, values: Partial<T>, options?: WriteOptions): Promise<boolean> {
+    public async updateIfExists(
+        conditions: Partial<T>,
+        values: UpdateValues<T>,
+        options?: WriteOptions
+    ): Promise<boolean> {
         const hookConditions = conditions as Record<string, unknown>;
         const hookValues = values as Record<string, unknown>;
 
@@ -618,7 +657,8 @@ export class Repository<T extends BaseModel> {
      * `DataSource.executeBatch()`.
      *
      * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
-     * @param {Partial<T>} values The columns to set and the values to set them to.
+     * @param {UpdateValues<T>} values The columns to set and the values to set them to, or a collection
+     *     update such as `Append()`.
      * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
      * @returns {BatchStatement} The CQL and the values bound to its placeholders.
      * @throws {InvalidQueryError} If `values` is empty, assigns a primary key or COUNTER column,
@@ -626,7 +666,7 @@ export class Repository<T extends BaseModel> {
      * @throws {UnknownColumnError} If a column is not declared on the entity.
      * @throws {ColumnValidationError} If a value does not fit its column's declared type or fails its validator.
      */
-    public updateStatement(conditions: Partial<T>, values: Partial<T>, options?: WriteOptions): BatchStatement {
+    public updateStatement(conditions: Partial<T>, values: UpdateValues<T>, options?: WriteOptions): BatchStatement {
         return this.buildUpdateStatement(conditions, values, options);
     }
 
@@ -634,14 +674,15 @@ export class Repository<T extends BaseModel> {
      * Build the UPDATE shared by `update()`, `updateStatement()` and `updateIfExists()`.
      *
      * @param {Partial<T>} conditions Equality conditions; must identify rows by primary key.
-     * @param {Partial<T>} values The columns to set and the values to set them to.
+     * @param {UpdateValues<T>} values The columns to set and the values to set them to, or a collection
+     *     update such as `Append()`.
      * @param {WriteOptions} [options] The write options, including `ttl` in seconds.
      * @param {boolean} [ifExists=false] Whether to append `IF EXISTS`.
      * @returns {BatchStatement} The CQL and the values bound to its placeholders.
      */
     private buildUpdateStatement(
         conditions: Partial<T>,
-        values: Partial<T>,
+        values: UpdateValues<T>,
         options?: WriteOptions,
         ifExists: boolean = false
     ): BatchStatement {
@@ -659,6 +700,7 @@ export class Repository<T extends BaseModel> {
         const counters = this.counterColumns();
         const assignments: string[] = [];
         const params: BindableValue[] = [];
+        let isIdempotent = true;
 
         for (const [key, value] of entries) {
             const column = this.assertColumn(key);
@@ -677,10 +719,21 @@ export class Repository<T extends BaseModel> {
                 throw InvalidQueryError.undefinedAssignment(key, entity);
             }
 
-            this.assertValue(key, value);
+            if (value instanceof CollectionUpdate) {
+                const update = this.buildCollectionAssignment(key, column, value);
+
+                assignments.push(update.assignment);
+                params.push(value.value);
+                isIdempotent &&= update.isIdempotent;
+                continue;
+            }
+
+            const bound = this.toDatabase(key, value);
+
+            this.assertValue(key, bound);
 
             assignments.push(`${column} = ?`);
-            params.push(value);
+            params.push(bound);
         }
 
         const { conditionString, params: whereParams } = this.buildEqualityConditions(
@@ -700,7 +753,64 @@ export class Repository<T extends BaseModel> {
             query += ' IF EXISTS';
         }
 
-        return { query, params: [...using.params, ...params, ...whereParams] };
+        // Only set when false, so a statement without a list append is unchanged
+        return {
+            query,
+            params: [...using.params, ...params, ...whereParams],
+            ...(!isIdempotent && { isIdempotent: false as const }),
+        };
+    }
+
+    /**
+     * Validate a collection update against its column and render its assignment.
+     *
+     * The operand is bound as given — neither the column's `transformer` nor its
+     * `validate` applies to a partial collection — but its shape is checked
+     * against the column type, like a whole value.
+     *
+     * @param {string} key The property name being updated; already on the whitelist.
+     * @param {string} column The column name to emit.
+     * @param {CollectionUpdate} update The collection update supplied by the caller.
+     * @returns {{ assignment: string, isIdempotent: boolean }} The `SET` fragment, and whether
+     *     running it twice is harmless.
+     */
+    private buildCollectionAssignment(
+        key: string,
+        column: string,
+        update: CollectionUpdate
+    ): { assignment: string; isIdempotent: boolean } {
+        const entity = this.entityClass.name;
+        const { operation, value } = update;
+        const rule = COLLECTION_UPDATES.get(operation);
+
+        // Only reachable from JavaScript, by constructing a CollectionUpdate by hand
+        if (rule === undefined) {
+            throw InvalidQueryError.unsupportedOperator(operation, key, entity);
+        }
+
+        const type = this.columnDefinition(key)?.type;
+
+        if (type === undefined || !rule.types.includes(type)) {
+            throw InvalidQueryError.invalidCollectionUpdate(operation, key, entity, String(type), rule.allowed);
+        }
+
+        if (value === null || value === undefined) {
+            throw InvalidQueryError.nullCollectionOperand(operation, key, entity);
+        }
+
+        // The driver encodes a LIST from an array only, whatever its `encoding` options say
+        if (type === 'LIST' && !Array.isArray(value)) {
+            throw new ColumnValidationError({ column: key, entity, expected: 'an Array', receivedType: typeof value });
+        }
+
+        // The keys to remove from a map are a set of them, not a map
+        validateColumnValue(entity, key, operation === 'RemoveKeys' ? 'SET' : type, value);
+
+        return {
+            assignment: rule.render(column),
+            // A replayed append or prepend lands twice on a list; every other update converges
+            isIdempotent: !(type === 'LIST' && (operation === 'Append' || operation === 'Prepend')),
+        };
     }
 
     /**
@@ -1032,7 +1142,7 @@ export class Repository<T extends BaseModel> {
             throw new QueryFailedError(bound.query, error);
         }
 
-        return resolved.raw ? rows : rows.map((row) => this.mapRowToEntity(row));
+        return resolved.raw ? rows : this.loadEntities(rows);
     }
 
     /**
@@ -1074,7 +1184,7 @@ export class Repository<T extends BaseModel> {
         }
 
         return {
-            rows: options.raw ? page.rows : page.rows.map((row) => this.mapRowToEntity(row)),
+            rows: options.raw ? page.rows : await this.loadEntities(page.rows),
             pageState: page.pageState,
             hasMore: page.pageState !== undefined,
         };
@@ -1125,7 +1235,7 @@ export class Repository<T extends BaseModel> {
                 return;
             }
 
-            yield options.raw ? next.value : this.mapRowToEntity(next.value);
+            yield options.raw ? next.value : await this.loadEntity(next.value);
         }
     }
 
@@ -1419,11 +1529,41 @@ export class Repository<T extends BaseModel> {
      * @throws {ColumnValidationError} If the value fails the type predicate or the custom validator.
      */
     private assertValue(key: string, value: unknown): void {
-        const definition = (this.entityClass.columns ?? []).find((col) => col.name === key);
+        const definition = this.columnDefinition(key);
 
         if (definition !== undefined) {
             validateColumnValue(this.entityClass.name, key, definition.type, value, definition.options?.validate);
         }
+    }
+
+    /**
+     * Find the declared column for a property name.
+     *
+     * @param {string} key The property name.
+     * @returns {{ name: string, type: ColumnType, options?: ColumnOptions } | undefined} The column definition, if any.
+     */
+    private columnDefinition(key: string): NonNullable<typeof BaseModel.columns>[number] | undefined {
+        return (this.entityClass.columns ?? []).find((col) => col.name === key);
+    }
+
+    /**
+     * Convert a value bound to a column through the column's `transformer.to`, if it declares one.
+     *
+     * Null and undefined pass through untouched: they mean "delete the cell" and
+     * "leave it unset", which no conversion should change.
+     *
+     * @param {string} key The property name the value is bound to.
+     * @param {unknown} value The value as the caller supplied it.
+     * @returns {unknown} The value to validate and bind.
+     */
+    private toDatabase(key: string, value: unknown): unknown {
+        if (value === null || value === undefined) {
+            return value;
+        }
+
+        const transformer = this.columnDefinition(key)?.options?.transformer;
+
+        return transformer === undefined ? value : transformer.to(value);
     }
 
     /**
@@ -1485,7 +1625,7 @@ export class Repository<T extends BaseModel> {
             }
 
             conditionStrings.push(`${column} = ?`);
-            params.push(value as SimpleConditionValue);
+            params.push(this.toDatabase(key, value) as SimpleConditionValue);
         }
 
         return { conditionString: conditionStrings.join(' AND '), params };
@@ -1539,7 +1679,7 @@ export class Repository<T extends BaseModel> {
                         const operands: SimpleConditionValue[] = [];
 
                         for (let index = 0; index < operand.length; index++) {
-                            const element = operand[index];
+                            const element = this.toDatabase(key, operand[index]);
 
                             if (!isBindable(element)) {
                                 throw InvalidQueryError.invalidConditionValue(key, entity, 'IN', element);
@@ -1563,8 +1703,8 @@ export class Repository<T extends BaseModel> {
 
                         // Read by index like the IN branch: `map`/destructuring can be
                         // overridden by an Array subclass
-                        const from = operand[0];
-                        const to = operand[1];
+                        const from = this.toDatabase(key, operand[0]);
+                        const to = this.toDatabase(key, operand[1]);
 
                         if (!isBindable(from)) {
                             throw InvalidQueryError.invalidConditionValue(key, entity, 'BETWEEN', from);
@@ -1596,24 +1736,28 @@ export class Repository<T extends BaseModel> {
                     case '>':
                     case '>=':
                     case '=': {
-                        if (!isBindable(operand)) {
-                            throw InvalidQueryError.invalidConditionValue(key, entity, operator, operand);
+                        const bound = this.toDatabase(key, operand);
+
+                        if (!isBindable(bound)) {
+                            throw InvalidQueryError.invalidConditionValue(key, entity, operator, bound);
                         }
 
                         conditionStrings.push(`${column} ${operator} ?`);
-                        params.push(operand);
+                        params.push(bound);
                         break;
                     }
                     default:
                         throw InvalidQueryError.unsupportedOperator(operator, key, entity);
                 }
             } else {
-                if (!isBindable(value)) {
-                    throw InvalidQueryError.invalidConditionValue(key, entity, '=', value);
+                const bound = this.toDatabase(key, value);
+
+                if (!isBindable(bound)) {
+                    throw InvalidQueryError.invalidConditionValue(key, entity, '=', bound);
                 }
 
                 conditionStrings.push(`${column} = ?`);
-                params.push(value);
+                params.push(bound);
             }
         });
 
@@ -1621,6 +1765,38 @@ export class Repository<T extends BaseModel> {
             conditionString: conditionStrings.join(' AND '),
             params,
         };
+    }
+
+    /**
+     * Map rows to entities, then await each one's `afterLoad()` in row order.
+     *
+     * @param {object[]} rows The rows from the database.
+     * @returns {Promise<T[]>} The entities, once every hook has run.
+     */
+    private async loadEntities(rows: object[]): Promise<T[]> {
+        const entities = rows.map((row) => this.mapRowToEntity(row));
+
+        for (const entity of entities) {
+            // Guarded rather than `await entity.afterLoad?.()`, so an entity without the hook costs no
+            // tick, and a non-function member of that name (a JavaScript entity's column) is left alone
+            if (typeof entity.afterLoad === 'function') {
+                await entity.afterLoad();
+            }
+        }
+
+        return entities;
+    }
+
+    /**
+     * Map a single row to an entity and await its `afterLoad()`.
+     *
+     * @param {object} row The row from the database.
+     * @returns {Promise<T>} The entity, once its hook has run.
+     */
+    private async loadEntity(row: object): Promise<T> {
+        const [entity] = await this.loadEntities([row]);
+
+        return entity;
     }
 
     /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -1631,9 +1807,11 @@ export class Repository<T extends BaseModel> {
      * query narrower than the table — are skipped, so the property keeps its
      * constructor default or stays undefined.
      *
-     * CQL folds unquoted identifiers to lowercase, so the driver returns
-     * `firstname` for a column declared as `firstName`; the exact name is tried
-     * first, for a raw query that aliases or quotes it.
+     * Rows are read by the column's database name — its `name` option, or the
+     * property name. CQL folds unquoted identifiers to lowercase, so the driver
+     * returns `firstname` for a column declared as `firstName`; the exact name is
+     * tried first, for a raw query that aliases or quotes it. A column's
+     * `transformer.from` runs last, on non-null values.
      *
      * @param {any} row The row from the database.
      * @returns {T} The entity.
@@ -1641,12 +1819,15 @@ export class Repository<T extends BaseModel> {
     private mapRowToEntity(row: any): T {
         const entity = new this.entityClass() as T;
         for (const col of this.entityClass.columns || []) {
-            const key = Object.prototype.hasOwnProperty.call(row, col.name) ? col.name : col.name.toLowerCase();
+            const name = columnName(col);
+            const key = Object.prototype.hasOwnProperty.call(row, name) ? name : name.toLowerCase();
             if (!Object.prototype.hasOwnProperty.call(row, key)) {
                 continue;
             }
-            const rawValue = row[key];
-            (entity as any)[col.name] = this.transformValue(rawValue, col.type);
+            const value = this.transformValue(row[key], col.type);
+            const transformer = col.options?.transformer;
+            (entity as any)[col.name] =
+                transformer !== undefined && value !== null && value !== undefined ? transformer.from(value) : value;
         }
         return entity;
     }

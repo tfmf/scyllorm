@@ -287,8 +287,8 @@ export class DataSource {
      * needs no batch log. A batch of counter statements is sent as a counter
      * batch on its own; mixing them with other statements throws, as CQL
      * requires. The batch is retried on NoHostAvailableError/DriverInternalError
-     * only if it is idempotent: no counter and no `IF` condition, unless
-     * `options.isIdempotent` says otherwise.
+     * only if it is idempotent: no counter, no LIST append or prepend and no
+     * `IF` condition, unless `options.isIdempotent` says otherwise.
      *
      * @param statements The statements to run, at least one.
      * @param options Query options, such as `logged` or `consistency`; statements are prepared unless
@@ -308,11 +308,16 @@ export class DataSource {
         }
 
         const counter = options.counter ?? counters > 0;
-        // A counter moves again when replayed; a conditional write may report a different outcome
+        // A counter moves again when replayed, a list append lands twice, and a conditional
+        // write may report a different outcome
         const isIdempotent =
             options.isIdempotent ??
-            (!counter && !statements.some((statement) => CONDITIONAL.test(statement.query.replace(QUOTED, ''))));
-        // The driver only reads query and params; the counter marker is ours
+            (!counter &&
+                !statements.some(
+                    (statement) =>
+                        statement.isIdempotent === false || CONDITIONAL.test(statement.query.replace(QUOTED, ''))
+                ));
+        // The driver only reads query and params; the counter and idempotence markers are ours
         const queries = statements.map(({ query, params }) => ({ query, params }));
 
         await this.withRetry(
@@ -331,7 +336,8 @@ export class DataSource {
      * `executeQuery()`: `options.isIdempotent`, then the client's
      * `queryOptions.isIdempotent`, then whether it is a `SELECT` — pass
      * `isIdempotent: true` for writes from `saveStatement()`, `updateStatement()`
-     * or `deleteStatement()`. A counter statement is never retried.
+     * or `deleteStatement()`. A counter statement, or one that appends or
+     * prepends to a LIST, is never retried.
      *
      * On the first failure no new statement starts; the ones already running
      * finish, then the error is thrown. Statements that ran are not undone.
@@ -347,12 +353,13 @@ export class DataSource {
     ): Promise<T[][]> {
         const { concurrency, ...queryOptions } = options;
 
-        // A counter moves again when replayed, whatever the caller or the client default says
-        return mapConcurrent(statements, concurrency, ({ query, params, counter }) =>
+        // A counter moves again and a list append lands twice when replayed, whatever the
+        // caller or the client default says
+        return mapConcurrent(statements, concurrency, ({ query, params, counter, isIdempotent }) =>
             this.executeQuery<T>(query, params, {
                 prepare: true,
                 ...queryOptions,
-                ...(counter && { isIdempotent: false }),
+                ...((counter || isIdempotent === false) && { isIdempotent: false }),
             })
         );
     }
