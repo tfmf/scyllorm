@@ -1,4 +1,5 @@
 # Scyllorm - TypeScript ORM for ScyllaDB & Apache Cassandra
+
 [![NPM](https://img.shields.io/npm/v/scyllorm)](https://www.npmjs.com/package/scyllorm)
 [![npm downloads](https://img.shields.io/npm/dt/scyllorm.svg)](https://www.npmjs.com/package/scyllorm)
 [![CI](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml/badge.svg)](https://github.com/tfmf/scyllorm/actions/workflows/ci.yml)
@@ -9,7 +10,6 @@
   <img src="assets/scyllorm-logo.png" alt="Scyllorm" width="300">
 </p>
 
-
 Welcome to **Scyllorm**—an experimental TypeScript ORM for ScyllaDB and Apache Cassandra that’s so fresh, it’s practically still in beta diapers. We’ve set out to simplify database interactions in Node.js. By “simplify,” we mean it’s highly opinionated, so prepare to adopt our opinions, or go find another ORM. Features? Yeah, we’ve got some—just not all of them (yet). A few are stuck in the backlog, and others are on the database’s “no-can-do” list.
 
 Under the hood we use the Node.js [Cassandra driver](https://github.com/datastax/nodejs-driver/), and every statement Scyllorm generates is standard CQL 3—no Scylla-only extensions. That makes **both ScyllaDB and Apache Cassandra (3.x/4.x) first-class citizens**: same API, same CQL, pick whichever keeps your pager quieter.
@@ -17,18 +17,22 @@ Under the hood we use the Node.js [Cassandra driver](https://github.com/datastax
 Oh, and we’re currently rolling with the [Data Mapper Pattern](https://en.wikipedia.org/wiki/Data_mapper_pattern) because it’s what all the cool ORMs are doing. Maybe someday we’ll add the [Active Record Pattern](https://en.wikipedia.org/wiki/Active_record_pattern), but we’re still debating whether we like our records active or not.
 
 ## Prerequisites 🎒
+
 - <img src="https://github.com/user-attachments/assets/9804b3c6-4be3-4741-a1c9-ff4460eef94e" alt="node" width="20" height="20"> **Node.js:** If you don't have this, you might be in the wrong place.
 - <img src="https://github.com/user-attachments/assets/32da44a9-cc43-4987-af94-696488792995" alt="docker" width="20" height="20"> **Docker:** The easiest way to spin up ScyllaDB locally without accidentally summoning Cthulhu.
 
 ## Installation 🚀
+
 To install Scyllorm, just hit it with the good ol’ NPM:
 
 ```bash
 npm install scyllorm
 ```
+
 (https://www.npmjs.com/package/scyllorm)
 
 ## Step-by-Step Guide 🛠
+
 ### 1. Summon ScyllaDB via Docker 🐳
 
 **Docker:**
@@ -61,6 +65,7 @@ docker run -d \
 ```
 
 ### 2. Test Your Connection 🎯
+
 - For a friendly UI, try [DbVisualizer Free](https://www.dbvis.com/).
 - Or, if you're feeling hardcore, dive into the terminal:
 
@@ -69,6 +74,7 @@ docker exec -it scylladb_server cqlsh -u cassandra -p cassandra
 ```
 
 ### 3. Create a Test Table 🛠️
+
 Because what’s a database without a table?
 
 ```cql
@@ -95,6 +101,7 @@ CREATE INDEX employees_first_last_name_idx ON employees (last_name);
 Allergic to hand-written DDL? Your entities can generate all of this for you — see §10, Schema Synchronization.
 
 ### 4. Create Your Model 🎨
+
 Now, let’s make a model:
 
 ```typescript
@@ -131,6 +138,7 @@ export class Employee extends BaseModel {
 ```
 
 ### 5. Setup the DataSource 🛢
+
 This is where the magic happens:
 
 ```typescript
@@ -149,10 +157,11 @@ const dataSource = new DataSource({
 ```
 
 ### 6. Use the Repository 🛠
+
 Now, let’s put this thing to work:
 
 ```typescript
- async function run() {
+async function run() {
     try {
         await dataSource.initialize();
 
@@ -251,12 +260,15 @@ await repository.update({ id: 1 }, { city: 'Berlin', age: 31 });
 await repository.update({ id: 1 }, { city: null }); // deletes the cell
 
 // COUNTER columns move relative to themselves — update() rejects them:
-await repository.increment({ id: 'home' }, 'views');      // +1
-await repository.increment({ id: 'home' }, 'views', 5);   // +5
-await repository.decrement({ id: 'home' }, 'views', 2);   // -2
+await repository.increment({ id: 'home' }, 'views'); // +1
+await repository.increment({ id: 'home' }, 'views', 5); // +5
+await repository.decrement({ id: 'home' }, 'views', 2); // -2
 
 await repository.clear(); // TRUNCATE — empties the table
 ```
+
+To add to or remove from a `LIST`, `SET` or `MAP` without overwriting it, pass
+`Append()`, `Remove()`, `PutKeys()` and friends as the value (§18).
 
 #### Counts, existence and factories 🔢
 
@@ -302,7 +314,7 @@ const names = await repository.find({ select: ['first_name', 'last_name'], where
 
 #### Latest N per partition 🥇
 
-`perPartitionLimit` renders `PER PARTITION LIMIT ?` — the first N rows of *each*
+`perPartitionLimit` renders `PER PARTITION LIMIT ?` — the first N rows of _each_
 partition, in clustering order, in a single query. It is validated like `limit` — an
 integer from 1 to 2147483647, or a numeric string of one (else `InvalidQueryError`) — and
 can sit next to `limit`:
@@ -403,13 +415,7 @@ catches all of them — switch on `.code` rather than the message, since codes a
 stable and messages are not.
 
 ```typescript
-import {
-    ScyllormError,
-    UnknownColumnError,
-    InvalidQueryError,
-    QueryFailedError,
-    EntityNotFoundError,
-} from 'scyllorm';
+import { ScyllormError, UnknownColumnError, InvalidQueryError, QueryFailedError, EntityNotFoundError } from 'scyllorm';
 
 try {
     await repository.find({ where: { nope: 1 } });
@@ -480,9 +486,13 @@ CREATE TABLE IF NOT EXISTS posts (id uuid, created_at timeuuid, author text, tag
 CREATE INDEX IF NOT EXISTS posts_author_idx ON posts (author)
 ```
 
+Columns declared with a `name` option are created under that name, and
+`static: true` columns render `STATIC` (§17).
+
 Unrenderable metadata fails fast, locally: a collection without `of`, a table
-without a partition key, or a `TUPLE`/`FROZEN` column (create those tables
-yourself) all throw before anything reaches the server. Prefer to look before
+without a partition key, a `static` column on a table without a clustering key,
+a name that does not start with a letter, or a `TUPLE`/`FROZEN` column (create
+those tables yourself) all throw before anything reaches the server. Prefer to look before
 you leap? The builders are exported too — `buildSchema(Post)` returns the DDL
 strings without needing a connection at all (also `buildCreateTable` and
 `buildCreateIndexes` individually).
@@ -491,9 +501,9 @@ strings without needing a connection at all (also `buildCreateTable` and
 
 Entities can opt into lifecycle hooks — no decorators, no registration, just
 declare the method and Scyllorm awaits it. `save()` and `insertIfNotExists()`
-call the *instance* hooks; `update()`/`updateIfExists()` and
+call the _instance_ hooks; `update()`/`updateIfExists()` and
 `delete()`/`deleteIfExists()` target rows by conditions, so no instance exists —
-their hooks are *static* on the entity class. A `before*` hook that throws
+their hooks are _static_ on the entity class. A `before*` hook that throws
 aborts the write before anything is sent; an `after*` hook that throws
 propagates to the caller (the write already happened).
 
@@ -523,10 +533,42 @@ export class Employee extends BaseModel {
 ```
 
 The full set: instance `beforeSave()`/`afterSave()`, static
-`beforeUpdate(conditions, values)`/`afterUpdate(conditions, values)` and
-`beforeDelete(conditions)`/`afterDelete(conditions)`. The statement builders
-(§13), `increment()`/`decrement()`, `clear()` and the raw-query family run **no
-hooks**.
+`beforeUpdate(conditions, values)`/`afterUpdate(conditions, values)`,
+`beforeDelete(conditions)`/`afterDelete(conditions)`, and the instance
+`afterLoad()` for reads. The statement builders
+(§13), `increment()`/`decrement()` and `clear()` run **no write hooks**; the
+raw-query family runs none either, except `afterLoad()` (below).
+
+**`afterLoad()`** runs on every entity built from a row, once its columns are
+assigned, and is awaited — handy for derived fields:
+
+```typescript
+@Entity('people')
+export class Person extends BaseModel {
+    @PrimaryKeyColumn('INT', { partitionKey: true })
+    id: number;
+
+    @Column('TEXT')
+    first_name: string;
+
+    @Column('TEXT')
+    last_name: string;
+
+    fullName: string; // not a column — derived on load
+
+    afterLoad(): void {
+        this.fullName = `${this.first_name} ${this.last_name}`;
+    }
+}
+```
+
+It runs for `find()`, `findPaged()`, `stream()`, `findBy()`, `findOneBy()`,
+`findOne()`, `findOneOrFail()` and — unless you pass `raw: true` — `runRawQuery()`,
+`runRawQueryPaged()` and `streamRawQuery()`. Hooks are awaited in row order: for the
+calls that return an array, after all the rows of that result are mapped; for
+`stream()` and `streamRawQuery()`, on each row before it is yielded. A throw propagates to the caller (the raw
+family does not wrap it in `QueryFailedError`). `save()` and `create()` never call it:
+you already hold that instance.
 
 ### 12. TTL and Conditional Writes ⏳
 
@@ -554,7 +596,7 @@ A lightweight transaction cannot carry a client timestamp, so
 `insertIfNotExists()`, `updateIfExists()` and `deleteIfExists()` reject `timestamp`
 with `InvalidQueryError` before running anything.
 
-When “every write is an upsert” is exactly what you *don’t* want, the
+When “every write is an upsert” is exactly what you _don’t_ want, the
 conditional variants use a lightweight transaction and report whether the
 server applied the write:
 
@@ -698,7 +740,8 @@ times with exponential backoff and jitter (about 50, 100, 200ms) — but **only 
 idempotent statements**: the driver moves a timed-out idempotent statement on to the
 next host, so a `NoHostAvailableError` can arrive after a write was already applied,
 and repeating a non-idempotent one could apply it twice. Reads, `save()`, `update()`, `delete()` and `clear()` are
-idempotent; `increment()`, `decrement()` and the conditional writes (`...IfNotExists`,
+idempotent — except an `update()` that appends or prepends to a `LIST` (§18);
+`increment()`, `decrement()` and the conditional writes (`...IfNotExists`,
 `...IfExists`) are not, and are attempted once. Raw queries are inferred idempotent
 only when they start with `SELECT`; say otherwise with `isIdempotent`:
 
@@ -716,7 +759,8 @@ the per-call `isIdempotent`, then the client's `queryOptions.isIdempotent`, then
 writes and counter statements always say for themselves, so a client-wide `true` never
 makes an `increment()` or `incrementStatement()` retried.
 
-Batches are idempotent unless they are counter batches or contain an `IF` condition;
+Batches are idempotent unless they are counter batches, contain an `IF` condition or a
+`LIST` append/prepend (§18);
 override with `executeBatch(statements, { isIdempotent })`. The flag is also passed to
 the driver, so speculative executions configured through the client options
 (`policies.speculativeExecution`) only fire for idempotent statements — and so does the
@@ -725,7 +769,183 @@ moves an idempotent statement on to the next host of the query plan. Pass
 `policies: { retry: new policies.retry.FallthroughRetryPolicy() }` in the client
 options to turn that off.
 
+### 17. Column Names, Transformers and Static Columns 🏷
+
+**Different names in code and table.** `name` maps a camelCase property onto a
+snake_case column. Every API — `where`, `orderBy`, `select`, `update()`, `delete()`,
+hooks, `create()`, `getColumnNames()` and `@Index` — takes the **property** name;
+only the CQL uses the column name. `synchronize()` emits it in the column list,
+`PRIMARY KEY`, `CLUSTERING ORDER BY` and `CREATE INDEX`:
+
+```typescript
+@Entity('people')
+@Index('people_first_name_idx', 'firstName') // the property name
+export class Person extends BaseModel {
+    @PrimaryKeyColumn('INT', { partitionKey: true })
+    id: number;
+
+    @Column('TEXT', { name: 'first_name' })
+    firstName: string;
+}
+
+await repository.find({ where: { firstName: 'John' } }); // SELECT * FROM people WHERE first_name = ?
+await repository.update({ id: 1 }, { firstName: 'Jon' }); // UPDATE people SET first_name = ? WHERE id = ?
+```
+
+The name must be an unquoted CQL identifier (letters, digits and underscores, starting
+with a letter), otherwise `InvalidQueryError` is thrown. Two columns whose names differ
+only in case would collide in CQL, so that throws too. Rows are read back by the
+column name. Leave `name` out and nothing changes.
+
+**Transformers.** `transformer: { to, from }` converts a value between what the entity
+holds and what the column stores — JSON in a `TEXT` column, or an enum as an `INT`:
+
+```typescript
+enum Role {
+    Guest = 0,
+    Admin = 1,
+}
+
+@Entity('accounts')
+export class Account extends BaseModel {
+    @PrimaryKeyColumn('INT', { partitionKey: true })
+    id: number;
+
+    @Column('TEXT', { transformer: { to: (v) => JSON.stringify(v), from: (v) => JSON.parse(v as string) } })
+    settings: Record<string, unknown>;
+
+    @Column('INT', { transformer: { to: (v) => v as number, from: (v) => v as Role } })
+    role: Role;
+}
+```
+
+`to` runs on every non-null value written to the column — `save()`, the statement
+builders, `insertIfNotExists()`, `update()` values — and on values compared against it:
+equality conditions (`findOneBy()`, `delete()`, `update()`, the conditional writes) and
+`where` conditions (plain equality, `=`/`<`/`<=`/`>`/`>=` operands, `IN` elements and
+`BETWEEN` ends). It does **not** run on `Contains()`/`ContainsKey()` operands or on
+collection-update operands (below). The type check and your `validate` see the
+**transformed** value. `from` runs on every non-null value read, after the built-in
+conversion (so a `TIMESTAMP` is already a `Date`, a `UUID` already a string).
+
+Neither function is ever called with `null` or `undefined`: `null` still deletes the
+cell, `undefined` is still rejected on update, and a missing cell reads back as
+`null`. Without a transformer, values pass through untouched.
+
+**Static columns.** `static: true` declares a column whose value is shared by every row
+of a partition. `synchronize()` renders it `<name> <type> STATIC`; reads and writes
+are unchanged. The entity must have a clustering key — a static column in a table
+without one is rejected locally with `InvalidQueryError`:
+
+```typescript
+@Entity('sensor_readings')
+export class SensorReading extends BaseModel {
+    @PrimaryKeyColumn('TEXT', { partitionKey: true })
+    sensor: string;
+
+    @PrimaryKeyColumn('TIMESTAMP', { clusteringKey: true })
+    at: Date;
+
+    @Column('TEXT', { static: true }) // one value per sensor, shared by all its readings
+    location: string;
+
+    @Column('DOUBLE')
+    value: number;
+}
+```
+
+### 18. Collection Updates ➕
+
+To change a collection in place — without reading it first or overwriting it — pass a
+helper as the value in `update()`, `updateIfExists()` or `updateStatement()`:
+
+| Helper             | Column types  | CQL                 |
+| ------------------ | ------------- | ------------------- |
+| `Append(values)`   | `LIST`, `SET` | `tags = tags + ?`   |
+| `Prepend(values)`  | `LIST`        | `tags = ? + tags`   |
+| `Remove(values)`   | `LIST`, `SET` | `tags = tags - ?`   |
+| `PutKeys(entries)` | `MAP`         | `attrs = attrs + ?` |
+| `RemoveKeys(keys)` | `MAP`         | `attrs = attrs - ?` |
+
+```typescript
+import { Append, Prepend, PutKeys, Remove, RemoveKeys } from 'scyllorm';
+
+await repository.update({ id: 1 }, { tags: Append(['new']) });
+await repository.update({ id: 1 }, { tags: Prepend(['first']) });
+await repository.update({ id: 1 }, { tags: Remove(['old']) }); // every occurrence, for a LIST
+await repository.update({ id: 1 }, { attrs: PutKeys({ color: 'red' }), name: 'Ada' }); // mix with plain values
+await repository.update({ id: 1 }, { attrs: RemoveKeys(['size']) });
+```
+
+The operand is bound as you give it — no transformer, no `validate` — and must fit the
+column: an array for a `LIST`, an array or `Set` for a `SET` (and for `RemoveKeys`), a
+plain object for a `MAP`. The wrong helper for the column type (say `Prepend` on a `SET`, or `PutKeys` on
+a `LIST`) throws `InvalidQueryError`, as does a `null`/`undefined` operand; a malformed
+operand throws `ColumnValidationError`. All of it before anything is sent. Empty
+operands are harmless no-ops on the server. The primary-key, `COUNTER` and `undefined`
+checks of `update()` still apply.
+
+A JS `Set` or `Map` operand only encodes when the client is told to use them, exactly
+like `save()`: set `encoding: { set: Set, map: Map }` in the `ClientOptions`. Without
+it, a `Map` passed to `PutKeys` encodes as an empty map and silently writes nothing, so
+pass arrays and plain objects.
+
+**Retries.** `Append` and `Prepend` on a `LIST` are **not idempotent** — running them
+twice adds the element twice. `update()` marks them so, and they are attempted once, never
+retried (§16). `updateStatement()` returns `isIdempotent: false` for them (the key is
+absent for every other statement), which `executeBatch()` honours by not retrying the
+batch unless you pass `{ isIdempotent }` yourself, and `executeConcurrent()` honours
+regardless of its options. Everything else here (`SET` append, `Remove`, `PutKeys`,
+`RemoveKeys`) is idempotent.
+
+### 19. Recipes 🍳
+
+No new decorators for these, just what is already there.
+
+**Created-at.** A `default` function runs for every new instance:
+
+```typescript
+@Column('TIMESTAMP', { default: () => new Date() })
+created_at: Date;
+```
+
+**Updated-at.** On `save()`, stamp it in the instance `beforeSave()` hook. For
+`update()`, the static `beforeUpdate()` receives the `values` object and may mutate
+it, which changes what is written:
+
+```typescript
+@Entity('employees')
+export class Employee extends BaseModel {
+    // ... columns ...
+
+    @Column('TIMESTAMP')
+    updated_at: Date;
+
+    beforeSave(): void {
+        this.updated_at = new Date();
+    }
+
+    static beforeUpdate(conditions: Record<string, unknown>, values: Record<string, unknown>): void {
+        values.updated_at = new Date();
+    }
+}
+```
+
+**Generated UUID / TIMEUUID keys.** Use the driver's generators as `default`; a column
+of either type accepts a driver `Uuid`/`TimeUuid` or its canonical string:
+
+```typescript
+import { types } from 'cassandra-driver';
+
+@PrimaryKeyColumn('UUID', { partitionKey: true, default: () => types.Uuid.random() })
+id: types.Uuid | string;
+
+@PrimaryKeyColumn('TIMEUUID', { clusteringKey: true, default: () => types.TimeUuid.now() })
+event_id: types.TimeUuid | string;
+```
+
 ### Supported Column Types
+
 Scyllorm supports the following CQL column types:
 
 `ASCII` · `BIGINT` · `BLOB` · `BOOLEAN` · `COUNTER` · `DATE` · `DECIMAL` · `DOUBLE` · `DURATION` · `FLOAT` · `FROZEN` · `INET` · `INT` · `LIST` · `MAP` · `SET` · `SMALLINT` · `TINYINT` · `TIME` · `TIMESTAMP` · `TIMEUUID` · `TEXT` · `TUPLE` · `UUID` · `VARINT` · `VARCHAR`
@@ -733,6 +953,7 @@ Scyllorm supports the following CQL column types:
 And that’s it! If you followed along and didn’t encounter any errors, you’re officially ready to start messing with ScyllaDB using TypeScript in Node.js. Congratulations! 🎉🌊🦑💻
 
 ## Testing 🧪
+
 The suite runs on [Vitest](https://vitest.dev/) — no live ScyllaDB required, the driver is mocked.
 
 ```bash
@@ -758,14 +979,15 @@ CI runs the same script in check mode and fails the build if the badge does not
 match what the suite measured, so it cannot quietly drift out of date.
 
 ## Contributing
-Found a bug? Want to add a feature?  We welcome all contributions! Just open a PR and we'll review it as fas as humanly possible (or not)
+
+Found a bug? Want to add a feature? We welcome all contributions! Just open a PR and we'll review it as fas as humanly possible (or not)
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the test commands and what a reviewable PR looks like. Everyone taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Examples
+
 You can find examples in Typescript and Javascript inside the folder [src/examples](https://github.com/tfmf/scyllorm/tree/main/src/example)
 
 ## License
+
 MIT License
-
-

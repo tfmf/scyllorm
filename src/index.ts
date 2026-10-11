@@ -27,10 +27,14 @@ export {
     ContainsKey,
 } from './repository/query-utils';
 
+// Export the collection updates accepted as values by `update()`
+export { Append, Prepend, Remove, PutKeys, RemoveKeys, CollectionUpdate } from './repository/query-utils';
+
 // Export the query and result types used by the Repository API
 export {
     BatchStatement,
     BindableValue,
+    CollectionOperation,
     ConcurrencyOptions,
     Condition,
     ConsistencyOptions,
@@ -44,6 +48,7 @@ export {
     RawQueryParams,
     RawRow,
     SimpleConditionValue,
+    UpdateValues,
     WriteOptions,
 } from './repository/query-utils';
 
@@ -63,7 +68,7 @@ export type { UnknownColumnDetails, EntityNotFoundDetails, ColumnValidationDetai
 
 // Exporting the Column, Table, and PrimaryKey decorators for defining model structures
 export { Column } from './decorators/Column';
-export type { ColumnType, ColumnOptions } from './decorators/Column';
+export type { ColumnType, ColumnOptions, ColumnTransformer } from './decorators/Column';
 export type { PrimaryKeyColumnType, PrimaryKeyColumnOptions } from './decorators/PrimaryKey';
 export { Table } from './decorators/Table';
 export { PrimaryKeyColumn } from './decorators/PrimaryKey';

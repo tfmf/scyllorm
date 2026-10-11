@@ -29,8 +29,43 @@ export type ColumnType =
     | 'VARINT'
     | 'VARCHAR';
 
+/**
+ * Converts a column's value between the shape the entity holds and the shape
+ * the database stores — JSON in a TEXT column, an enum as an INT.
+ *
+ * Neither function is ever called with `null` or `undefined`: those keep
+ * meaning "delete the cell" and "leave it unset" on write, and "no value" on read.
+ */
+export interface ColumnTransformer {
+    /**
+     * Entity value to database value. Runs on every value written to the
+     * column and on every `where` value compared against it (equality,
+     * comparisons, `IN` elements, `BETWEEN` ends), but not on `Contains()`,
+     * `ContainsKey()` or collection-update operands. The type check and
+     * `validate` see its result.
+     */
+    to(value: unknown): unknown;
+    /** Database value to entity value. Runs on every non-null value read, after the built-in conversion. */
+    from(value: unknown): unknown;
+}
+
 export interface ColumnOptions {
     default?: unknown; // Default value for the column
+    /**
+     * The column's name in the database, when it differs from the property's —
+     * a camelCase model over a snake_case table. Every API call still takes the
+     * property name; only the CQL uses this one. Must be an unquoted CQL
+     * identifier.
+     */
+    name?: string;
+    /** Converts the value on write and on read; see {@link ColumnTransformer}. */
+    transformer?: ColumnTransformer;
+    /**
+     * Declare the column `STATIC`: one value shared by every row of a
+     * partition. Only affects `synchronize()`/`buildCreateTable()`, which
+     * require the entity to have a clustering key.
+     */
+    static?: boolean;
     /**
      * Element type for collection columns, used when generating schema.
      *

@@ -1,5 +1,5 @@
 import { BaseModel } from '../model/BaseModel';
-import { ColumnType, ColumnOptions } from './Column';
+import { ColumnType, ColumnOptions, ColumnTransformer } from './Column';
 import { ownMetadataArray, upsertByName } from './metadata-utils';
 
 export type PrimaryKeyColumnType =
@@ -28,6 +28,10 @@ export interface PrimaryKeyColumnOptions {
     partitionKey?: boolean; // Whether the column is a partition key
     clusteringKey?: boolean; // Whether the column is a clustering key
     order?: 'ASC' | 'DESC'; // Clustering order, only meaningful on clustering keys
+    /** The column's name in the database, when it differs from the property's; see `ColumnOptions.name`. */
+    name?: string;
+    /** Converts the value on write, in conditions and on read; see {@link ColumnTransformer}. */
+    transformer?: ColumnTransformer;
 }
 
 /**

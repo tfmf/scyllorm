@@ -457,7 +457,7 @@ export class InvalidQueryError extends ScyllormError {
     static invalidSchemaIdentifier(kind: string, identifier: string, entity: string): InvalidQueryError {
         return new InvalidQueryError(
             `Invalid ${kind} identifier ${quote(identifier)} on entity ${entity}. ` +
-                'A schema identifier must start with a letter or underscore and contain only ' +
+                'A schema identifier must start with a letter and contain only ' +
                 'letters, digits and underscores.'
         );
     }
@@ -639,6 +639,62 @@ export class InvalidQueryError extends ScyllormError {
         return new InvalidQueryError(
             'Cannot mix counter updates with other statements in one batch. ' +
                 'Run the incrementStatement()/decrementStatement() ones in a batch of their own.'
+        );
+    }
+
+    /**
+     * Builds the error for a STATIC column on an entity without a clustering
+     * key, which CQL refuses: every partition holds one row, so there is
+     * nothing to share the value across.
+     *
+     * @param {string} column The column declared static.
+     * @param {string} entity The name of the entity class the schema was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static staticWithoutClustering(column: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Column ${quote(column)} on entity ${entity} is static, but the entity has no clustering key. ` +
+                'A static column is shared by the rows of a partition; declare a clustering key or drop static.'
+        );
+    }
+
+    /**
+     * Builds the error for a collection update applied to a column whose type
+     * does not support it, which the server would reject a round trip away.
+     *
+     * @param {string} operation The collection update, e.g. `Prepend`.
+     * @param {string} column The column it was given for.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @param {string} type The column's declared type.
+     * @param {string} allowed The types the operation applies to, for the message.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidCollectionUpdate(
+        operation: string,
+        column: string,
+        entity: string,
+        type: string,
+        allowed: string
+    ): InvalidQueryError {
+        return new InvalidQueryError(
+            `Cannot apply ${operation}() to column ${quote(column)} on entity ${entity}: ` +
+                `it is a ${type} column, and ${operation}() applies to ${allowed}.`
+        );
+    }
+
+    /**
+     * Builds the error for a collection update given null or undefined
+     * instead of the elements to apply.
+     *
+     * @param {string} operation The collection update, e.g. `Append`.
+     * @param {string} column The column it was given for.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static nullCollectionOperand(operation: string, column: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `${operation}() on column ${quote(column)} on entity ${entity} was given null or undefined. ` +
+                'Pass the elements to apply, or drop the column from the update.'
         );
     }
 }

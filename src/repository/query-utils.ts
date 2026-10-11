@@ -154,7 +154,32 @@ export interface BatchStatement {
      * counter batch, and refuses one that mixes them with other statements.
      */
     counter?: boolean;
+    /**
+     * Set to `false` to mark a statement that is not safe to run twice;
+     * `updateStatement()` does so when it appends or prepends to a LIST.
+     * `executeBatch()` then does not retry the batch unless told to, and
+     * `executeConcurrent()` never retries the statement. Any other value is ignored.
+     */
+    isIdempotent?: boolean;
 }
+
+/** The collection updates, as named by the helper that builds them. */
+export type CollectionOperation = 'Append' | 'Prepend' | 'Remove' | 'PutKeys' | 'RemoveKeys';
+
+/**
+ * An update applied to a collection column in place, instead of overwriting it.
+ * Built by `Append()`, `Prepend()`, `Remove()`, `PutKeys()` and `RemoveKeys()`;
+ * a class so that a MAP value — a plain object — can never be mistaken for one.
+ */
+export class CollectionUpdate {
+    constructor(
+        readonly operation: CollectionOperation,
+        readonly value: unknown
+    ) {}
+}
+
+/** The values `update()` accepts: each column's own type, or a collection update. */
+export type UpdateValues<T> = { [K in keyof T]?: T[K] | CollectionUpdate };
 
 /** A row as the driver returned it, when `raw` is set. */
 export interface RawRow {
@@ -243,6 +268,41 @@ export function ContainsKey<T extends SimpleConditionValue>(key: T): Condition {
         operator: 'CONTAINS KEY',
         value: key,
     };
+}
+
+/**
+ * Add elements to the end of a LIST, or to a SET, in `update()`: `col = col + ?`.
+ * A LIST takes an array only; the driver cannot encode a `Set` as one.
+ *
+ * Appending to a LIST is not idempotent — a replay appends twice — so such an
+ * update is never retried.
+ */
+export function Append<T>(values: T[] | Set<T>): CollectionUpdate {
+    return new CollectionUpdate('Append', values);
+}
+
+/**
+ * Add elements to the start of a LIST in `update()`: `col = ? + col`.
+ *
+ * Not idempotent — a replay prepends twice — so such an update is never retried.
+ */
+export function Prepend<T>(values: T[]): CollectionUpdate {
+    return new CollectionUpdate('Prepend', values);
+}
+
+/** Remove every occurrence of the elements from a LIST, or remove them from a SET, in `update()`: `col = col - ?`. */
+export function Remove<T>(values: T[] | Set<T>): CollectionUpdate {
+    return new CollectionUpdate('Remove', values);
+}
+
+/** Add or overwrite entries of a MAP in `update()`: `col = col + ?`. */
+export function PutKeys(entries: Record<string, unknown> | Map<unknown, unknown>): CollectionUpdate {
+    return new CollectionUpdate('PutKeys', entries);
+}
+
+/** Remove keys from a MAP in `update()`: `col = col - ?`. */
+export function RemoveKeys<K>(keys: K[] | Set<K>): CollectionUpdate {
+    return new CollectionUpdate('RemoveKeys', keys);
 }
 
 /**

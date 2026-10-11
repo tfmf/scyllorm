@@ -45,3 +45,13 @@ export function upsertByName<T extends { name: string }>(list: T[], definition: 
         list[existing] = definition;
     }
 }
+
+/**
+ * The name a column has in the database: its `name` option, or the property name.
+ *
+ * @param {{ name: string, options?: { name?: string } }} column The column definition.
+ * @returns {string} The name to emit in CQL and to read rows by.
+ */
+export function columnName(column: { name: string; options?: { name?: string } }): string {
+    return column.options?.name ?? column.name;
+}
