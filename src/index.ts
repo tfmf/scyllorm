@@ -1,7 +1,7 @@
 import { types } from 'cassandra-driver';
 
 // Exporting the DataSource class for managing database connections
-export { DataSource, PagedResult } from './data-source/DataSource';
+export { DataSource, PagedResult, SynchronizeOptions } from './data-source/DataSource';
 export type { ConnectionOptions, Logger } from './data-source/ConnectionOptions';
 
 // The driver's consistency levels, for `consistency` on the query options
@@ -11,7 +11,7 @@ export const consistencies = types.consistencies;
 export { Repository } from './repository/Repository';
 
 // Export the schema builders, so callers can generate or inspect DDL without a connection
-export { buildCreateTable, buildCreateIndexes, buildSchema } from './schema';
+export { buildCreateTable, buildCreateIndexes, buildCreateTypes, buildSchema } from './schema';
 
 // Export operators and interfaces for defining query conditions
 export {
@@ -47,6 +47,7 @@ export {
     RawQueryOptions,
     RawQueryParams,
     RawRow,
+    ScanOptions,
     SimpleConditionValue,
     UpdateValues,
     WriteOptions,
@@ -68,7 +69,13 @@ export type { UnknownColumnDetails, EntityNotFoundDetails, ColumnValidationDetai
 
 // Exporting the Column, Table, and PrimaryKey decorators for defining model structures
 export { Column } from './decorators/Column';
-export type { ColumnType, ColumnOptions, ColumnTransformer } from './decorators/Column';
+export type {
+    ColumnType,
+    ColumnOptions,
+    ColumnTransformer,
+    UserDefinedType,
+    UserDefinedTypeField,
+} from './decorators/Column';
 export type { PrimaryKeyColumnType, PrimaryKeyColumnOptions } from './decorators/PrimaryKey';
 export { Table } from './decorators/Table';
 export { PrimaryKeyColumn } from './decorators/PrimaryKey';

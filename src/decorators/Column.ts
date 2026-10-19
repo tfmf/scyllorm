@@ -25,6 +25,7 @@ export type ColumnType =
     | 'TIMEUUID'
     | 'TEXT'
     | 'TUPLE'
+    | 'UDT'
     | 'UUID'
     | 'VARINT'
     | 'VARCHAR';
@@ -47,6 +48,31 @@ export interface ColumnTransformer {
     to(value: unknown): unknown;
     /** Database value to entity value. Runs on every non-null value read, after the built-in conversion. */
     from(value: unknown): unknown;
+}
+
+/** One field of a {@link UserDefinedType}: a bare type, or a type with the options it needs. */
+export interface UserDefinedTypeField {
+    /** The field's CQL type. COUNTER, TUPLE and FROZEN are not supported. */
+    type: ColumnType;
+    /** Element type for a LIST, SET or MAP field, as in {@link ColumnOptions.of}. */
+    of?: ColumnType | [ColumnType, ColumnType];
+    /** The type a `'UDT'` field (or a collection of them) names, as in {@link ColumnOptions.udt}. Always frozen. */
+    udt?: string | UserDefinedType;
+}
+
+/**
+ * A user-defined type, created by `synchronize()` as `CREATE TYPE IF NOT EXISTS`.
+ *
+ * Field names must be lowercase (`/^[a-z][a-z0-9_]*$/`): the driver matches the
+ * keys of a written object to the folded field names exactly and silently drops
+ * the rest. `constructor` and other `Object.prototype` member names are refused, and
+ * so is `operator`, which would make a value used as a condition read as an operator.
+ */
+export interface UserDefinedType {
+    /** The type's name: an unqualified schema identifier. */
+    name: string;
+    /** The fields, in declaration order; a string is shorthand for `{ type }`. */
+    fields: Record<string, ColumnType | UserDefinedTypeField>;
 }
 
 export interface ColumnOptions {
@@ -74,6 +100,25 @@ export interface ColumnOptions {
      * Element types must be scalar — nested collections are not supported.
      */
     of?: ColumnType | [ColumnType, ColumnType];
+    /**
+     * The user-defined type of a `'UDT'` column, or of the `'UDT'` elements of a
+     * LIST/SET/MAP column (one `udt` applies to every `'UDT'` element).
+     *
+     * A string names a type managed outside the ORM, which `synchronize()` does
+     * not create; an object is created by `synchronize()`.
+     *
+     * A MAP keyed by a UDT needs `encoding: { map: Map }` in the client options:
+     * without it a JS Map is written as nothing, and every key reads back as
+     * the same `'[object Object]'` property.
+     */
+    udt?: string | UserDefinedType;
+    /**
+     * Whether a `'UDT'` column renders `frozen<type>`. Defaults to true; `false`
+     * renders the bare type name. A non-frozen column whose type definition has a
+     * LIST, SET or MAP field throws `InvalidQueryError` before any DDL, since the
+     * server refuses it. Collection elements are always frozen.
+     */
+    frozen?: boolean;
     /**
      * Custom validator run on write, after the type check, only on non-null,
      * non-undefined values.

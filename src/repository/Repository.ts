@@ -27,9 +27,24 @@ import {
     RawQueryOptions,
     RawQueryParams,
     RawRow,
+    ScanOptions,
     UpdateValues,
     WriteOptions,
 } from './query-utils';
+import { splitTokenRing, streamConcurrent } from './token-ranges';
+
+/** The column types sum() and avg() accept: the ones the server can add up. */
+const NUMERIC_TYPES = new Set<string>([
+    'TINYINT',
+    'SMALLINT',
+    'INT',
+    'BIGINT',
+    'VARINT',
+    'FLOAT',
+    'DOUBLE',
+    'DECIMAL',
+    'COUNTER',
+]);
 
 /**
  * The property-to-column map for each entity class, built once on first use.
@@ -184,6 +199,39 @@ function isBindable(value: unknown): value is SimpleConditionValue {
     ];
 
     return driverTypes.some((driverType) => value instanceof driverType);
+}
+
+/**
+ * Whether a condition value can be bound against a column.
+ *
+ * Plain objects are refused by `isBindable` as mis-shaped conditions, except against a
+ * column that holds user-defined types — a UDT, or a collection of them for `Contains()` —
+ * where a plain object is exactly what the driver binds. A function rather than a method,
+ * so every condition path keeps running the ORM's own check whatever a subclass declares.
+ *
+ * @param {object | undefined} definition The declared column the value is compared against.
+ * @param {unknown} value The value to bind.
+ * @returns {boolean} True if the driver can bind it.
+ */
+function isBindableTo(
+    definition: { type: ColumnType; options?: { of?: unknown } } | undefined,
+    value: unknown
+): value is SimpleConditionValue {
+    if (isBindable(value)) {
+        return true;
+    }
+
+    const of = definition?.options?.of;
+    const holdsUdt = definition?.type === 'UDT' || of === 'UDT' || (Array.isArray(of) && of.includes('UDT'));
+
+    return (
+        holdsUdt &&
+        typeof value === 'object' &&
+        value !== null &&
+        !Array.isArray(value) &&
+        !(value instanceof Map) &&
+        !(value instanceof Set)
+    );
 }
 
 /**
@@ -429,6 +477,73 @@ export class Repository<T extends BaseModel> {
 
         for await (const row of this.dataSource.streamQuery<T>(query, params, this.buildQueryOptions(options))) {
             yield await this.loadEntity(row);
+        }
+    }
+
+    /**
+     * Read the whole table by cutting the token ring into ranges and reading several at once.
+     *
+     * For full-table jobs (backfills, exports); this is ScyllaDB's recommended way to scan a table.
+     * Rows come in no particular order. Memory is bounded by `concurrency` pages. It assumes the
+     * Murmur3 partitioner (the default of ScyllaDB and Cassandra). Rows written during the scan may
+     * or may not be seen. Entities are mapped like `find()`, so `afterLoad` and transformers apply.
+     * @param {ScanOptions} [options] The concurrency, number of token ranges, page size, projection
+     *     and consistency.
+     * @returns {AsyncIterableIterator<T>} An async iterator over every entity.
+     * @throws {InvalidQueryError} If the entity has no partition key, `concurrency` or `splits` is not
+     *     a positive integer, or `select` is empty or holds a name that is not an identifier.
+     * @throws {UnknownColumnError} If `select` names a column the entity does not declare.
+     *     Both are thrown on the first advance of the iterator, not on the call, as with any async generator.
+     */
+    public async *scan(options?: ScanOptions): AsyncIterableIterator<T> {
+        const concurrency = options?.concurrency ?? 16;
+        const splits = options?.splits ?? concurrency * 4;
+
+        if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+            throw InvalidQueryError.invalidConcurrency(concurrency);
+        }
+        if (!Number.isSafeInteger(splits) || splits < 1) {
+            throw InvalidQueryError.invalidSplits(splits);
+        }
+
+        const partitionKeys = this.entityClass
+            .getPrimaryKeys()
+            .filter((key) => key.options?.partitionKey === true)
+            .map((key) => this.assertColumn(key.name));
+
+        if (partitionKeys.length === 0) {
+            throw InvalidQueryError.missingPartitionKey(this.entityClass.name);
+        }
+
+        let projection = '*';
+
+        if (options?.select !== undefined) {
+            if (options.select.length === 0) {
+                throw InvalidQueryError.emptyConditions('select clause', this.entityClass.name);
+            }
+            projection = options.select.map((key) => this.assertColumn(key)).join(', ');
+        }
+
+        const token = `token(${partitionKeys.join(', ')})`;
+        const query = `SELECT ${projection} FROM ${this.entityClass.getTableName()} WHERE ${token} > ? AND ${token} <= ?`;
+        const ranges = splitTokenRing(splits);
+        // Not buildQueryOptions(): a caller's pageState belongs to one query, never to every range
+        const queryOptions = this.buildQueryOptions({
+            consistency: options?.consistency,
+            fetchSize: options?.fetchSize,
+        });
+
+        const pages = streamConcurrent<T>(ranges.length, concurrency, (task, pageState) =>
+            this.dataSource.executeQueryPage<T>(query, ranges[task], {
+                ...queryOptions,
+                ...(pageState !== undefined && { pageState }),
+            })
+        );
+
+        for await (const rows of pages) {
+            for (const entity of await this.loadEntities(rows)) {
+                yield entity;
+            }
         }
     }
 
@@ -947,6 +1062,102 @@ export class Repository<T extends BaseModel> {
         const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.options);
 
         return rows.length > 0;
+    }
+
+    /**
+     * Sum a numeric column over the rows matching the conditions.
+     *
+     * Meant for a single partition: the conditions should pin the full partition key. Across
+     * partitions it is a full scan, and non-key conditions need `allowFiltering`. No hooks run.
+     * A TINYINT, SMALLINT or INT sum is computed at the column's own width and overflows quickly (a
+     * TINYINT sum past 127), which the server rejects; declare the column BIGINT, or use
+     * `runRawQuery` with `sum(cast(c AS bigint))`. The sum covers stored values, untouched by transformers.
+     *
+     * @param {string} column The numeric column to sum.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {Promise<number | types.Long | types.BigDecimal | types.Integer>} The sum as the driver returns
+     * it for the column type; when no row matched, that type's zero (0, or a zero Long, Integer or BigDecimal).
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     * @throws {InvalidQueryError} If the column is not numeric or the conditions are empty.
+     */
+    public async sum(
+        column: keyof T & string,
+        conditions: NestedConditions,
+        allowFiltering: boolean = false
+    ): Promise<number | types.Long | types.BigDecimal | types.Integer> {
+        return this.numericAggregate('sum', column, conditions, allowFiltering);
+    }
+
+    /**
+     * Average a numeric column over the rows matching the conditions.
+     *
+     * Meant for a single partition: the conditions should pin the full partition key. Across
+     * partitions it is a full scan, and non-key conditions need `allowFiltering`. No hooks run.
+     * The server truncates the average of an integer column (avg(1, 2) is 1); for a fractional
+     * result use `runRawQuery` with `avg(cast(c AS double))`. The average covers stored values,
+     * untouched by transformers.
+     *
+     * @param {string} column The numeric column to average.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {Promise<number | types.Long | types.BigDecimal | types.Integer>} The average as the driver
+     * returns it for the column type; when no row matched, that type's zero (0, or a zero Long, Integer or BigDecimal).
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     * @throws {InvalidQueryError} If the column is not numeric or the conditions are empty.
+     */
+    public async avg(
+        column: keyof T & string,
+        conditions: NestedConditions,
+        allowFiltering: boolean = false
+    ): Promise<number | types.Long | types.BigDecimal | types.Integer> {
+        return this.numericAggregate('avg', column, conditions, allowFiltering);
+    }
+
+    /**
+     * Find the smallest value of a column over the rows matching the conditions.
+     *
+     * Meant for a single partition: the conditions should pin the full partition key. Across
+     * partitions it is a full scan, and non-key conditions need `allowFiltering`. No hooks run.
+     * The value is read like a column of a loaded entity: type conversion, then the column's
+     * `transformer.from`.
+     *
+     * @param {string} column The column to inspect.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {Promise<T[K] | null>} The minimum, or null when no row matched.
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     * @throws {InvalidQueryError} If the conditions are empty.
+     */
+    public async min<K extends keyof T & string>(
+        column: K,
+        conditions: NestedConditions,
+        allowFiltering: boolean = false
+    ): Promise<T[K] | null> {
+        return this.extremum('min', column, conditions, allowFiltering);
+    }
+
+    /**
+     * Find the largest value of a column over the rows matching the conditions.
+     *
+     * Meant for a single partition: the conditions should pin the full partition key. Across
+     * partitions it is a full scan, and non-key conditions need `allowFiltering`. No hooks run.
+     * The value is read like a column of a loaded entity: type conversion, then the column's
+     * `transformer.from`.
+     *
+     * @param {string} column The column to inspect.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {Promise<T[K] | null>} The maximum, or null when no row matched.
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     * @throws {InvalidQueryError} If the conditions are empty.
+     */
+    public async max<K extends keyof T & string>(
+        column: K,
+        conditions: NestedConditions,
+        allowFiltering: boolean = false
+    ): Promise<T[K] | null> {
+        return this.extremum('max', column, conditions, allowFiltering);
     }
 
     /**
@@ -1532,7 +1743,14 @@ export class Repository<T extends BaseModel> {
         const definition = this.columnDefinition(key);
 
         if (definition !== undefined) {
-            validateColumnValue(this.entityClass.name, key, definition.type, value, definition.options?.validate);
+            validateColumnValue(
+                this.entityClass.name,
+                key,
+                definition.type,
+                value,
+                definition.options?.validate,
+                definition.type === 'UDT' ? definition.options?.udt : undefined
+            );
         }
     }
 
@@ -1681,7 +1899,7 @@ export class Repository<T extends BaseModel> {
                         for (let index = 0; index < operand.length; index++) {
                             const element = this.toDatabase(key, operand[index]);
 
-                            if (!isBindable(element)) {
+                            if (!isBindableTo(this.columnDefinition(key), element)) {
                                 throw InvalidQueryError.invalidConditionValue(key, entity, 'IN', element);
                             }
 
@@ -1722,7 +1940,7 @@ export class Repository<T extends BaseModel> {
                     }
                     case 'CONTAINS':
                     case 'CONTAINS KEY': {
-                        if (!isBindable(operand)) {
+                        if (!isBindableTo(this.columnDefinition(key), operand)) {
                             throw InvalidQueryError.invalidConditionValue(key, entity, operator, operand);
                         }
 
@@ -1738,7 +1956,7 @@ export class Repository<T extends BaseModel> {
                     case '=': {
                         const bound = this.toDatabase(key, operand);
 
-                        if (!isBindable(bound)) {
+                        if (!isBindableTo(this.columnDefinition(key), bound)) {
                             throw InvalidQueryError.invalidConditionValue(key, entity, operator, bound);
                         }
 
@@ -1752,7 +1970,7 @@ export class Repository<T extends BaseModel> {
             } else {
                 const bound = this.toDatabase(key, value);
 
-                if (!isBindable(bound)) {
+                if (!isBindableTo(this.columnDefinition(key), bound)) {
                     throw InvalidQueryError.invalidConditionValue(key, entity, '=', bound);
                 }
 
@@ -1830,6 +2048,90 @@ export class Repository<T extends BaseModel> {
                 transformer !== undefined && value !== null && value !== undefined ? transformer.from(value) : value;
         }
         return entity;
+    }
+
+    /**
+     * Run one aggregate over a column and return the raw `value` cell.
+     *
+     * @param {'sum' | 'avg' | 'min' | 'max'} fn The aggregate; a literal chosen by the caller, never input.
+     * @param {string} key The property name of the column.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} allowFiltering Whether to allow filtering on the query.
+     * @returns {Promise<{ value: any; type: string | undefined }>} The cell as the driver returned it, and the type.
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     * @throws {InvalidQueryError} If sum/avg meets a non-numeric column, or the conditions are empty.
+     */
+    private async runAggregate(
+        fn: 'sum' | 'avg' | 'min' | 'max',
+        key: string,
+        conditions: NestedConditions,
+        allowFiltering: boolean
+    ): Promise<{ value: any; type: string | undefined }> {
+        // Resolved first so an unknown column wins over any other complaint
+        const column = this.assertColumn(key);
+        const type = this.columnDefinition(key)?.type;
+
+        if ((fn === 'sum' || fn === 'avg') && !NUMERIC_TYPES.has(type as string)) {
+            throw InvalidQueryError.nonNumericAggregate(fn, key, this.entityClass.name, String(type));
+        }
+
+        const { conditionString, params } = this.buildConditionStringAndParams(conditions);
+        let query = `SELECT ${fn}(${column}) AS value FROM ${this.entityClass.getTableName()} WHERE ${conditionString}`;
+
+        if (allowFiltering) {
+            query += ' ALLOW FILTERING';
+        }
+
+        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.options);
+
+        return { value: rows[0]?.value, type };
+    }
+
+    /**
+     * Shared body of sum() and avg(): the driver's value, or 0 for an empty result.
+     *
+     * @param {'sum' | 'avg'} fn The aggregate to run.
+     * @param {string} key The property name of the column.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} allowFiltering Whether to allow filtering on the query.
+     * @returns {Promise<number | types.Long | types.BigDecimal | types.Integer>} The aggregate.
+     */
+    private async numericAggregate(
+        fn: 'sum' | 'avg',
+        key: string,
+        conditions: NestedConditions,
+        allowFiltering: boolean
+    ): Promise<number | types.Long | types.BigDecimal | types.Integer> {
+        const { value } = await this.runAggregate(fn, key, conditions, allowFiltering);
+
+        return value === null || value === undefined ? 0 : value;
+    }
+
+    /**
+     * Shared body of min() and max(): the value converted as a read of that column would be.
+     *
+     * @param {'min' | 'max'} fn The aggregate to run.
+     * @param {string} key The property name of the column.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} allowFiltering Whether to allow filtering on the query.
+     * @returns {Promise<any>} The converted value, or null when there is none.
+     */
+    private async extremum(
+        fn: 'min' | 'max',
+        key: string,
+        conditions: NestedConditions,
+        allowFiltering: boolean
+    ): Promise<any> {
+        const { value, type } = await this.runAggregate(fn, key, conditions, allowFiltering);
+
+        if (value === null || value === undefined) {
+            return null;
+        }
+
+        const converted = this.transformValue(value, type as string);
+        const transformer = this.columnDefinition(key)?.options?.transformer;
+
+        return transformer === undefined ? converted : transformer.from(converted);
     }
 
     /**

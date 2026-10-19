@@ -445,6 +445,23 @@ export class InvalidQueryError extends ScyllormError {
     }
 
     /**
+     * Builds the error for sum() or avg() on a column whose type holds no number.
+     *
+     * @param {string} fn The aggregate that was requested, such as `sum`.
+     * @param {string} column The property name the aggregate was requested on.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @param {string} type The declared type of the column.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static nonNumericAggregate(fn: string, column: string, entity: string, type: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `${fn}() cannot aggregate column ${quote(column)} of entity ${entity}: it is declared ${type}, not a ` +
+                'numeric type. sum() and avg() apply to TINYINT, SMALLINT, INT, BIGINT, VARINT, FLOAT, DOUBLE, ' +
+                'DECIMAL and COUNTER columns; use min() or max() for other types.'
+        );
+    }
+
+    /**
      * Builds the error for a schema identifier — a table, column or index name —
      * that is not a legal unquoted CQL identifier. DDL cannot parameterize
      * identifiers, so anything failing this shape never reaches the server.
@@ -527,6 +544,81 @@ export class InvalidQueryError extends ScyllormError {
             `Cannot generate a schema definition for column ${quote(column)} of entity ${entity}: ` +
                 `type ${quote(type)} is not supported by the schema builder. ` +
                 'Create this table manually with runRawQuery() instead.'
+        );
+    }
+
+    /**
+     * Builds the error for a UDT column, or a collection of UDTs, with no
+     * `udt` option to say which type it holds.
+     *
+     * @param {string} column The column being rendered.
+     * @param {string} entity The name of the entity class the schema is built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static missingUdt(column: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Column ${quote(column)} of entity ${entity} holds a UDT but declares no udt option. ` +
+                "Add { udt: 'type_name' } for a type managed elsewhere, or { udt: { name, fields } } " +
+                'to have synchronize() create it.'
+        );
+    }
+
+    /**
+     * Builds the error for two different definitions of one user-defined type
+     * name, which `CREATE TYPE IF NOT EXISTS` would resolve silently by
+     * keeping whichever ran first.
+     *
+     * @param {string} name The type name both definitions use.
+     * @param {string} entity The name of the entity class the schema is built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static conflictingUdt(name: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `User-defined type ${quote(name)} is defined twice with different fields (reached from entity ${entity}). ` +
+                'Share one definition object, or give the types different names.'
+        );
+    }
+
+    /**
+     * Builds the error for a user-defined type that contains itself, directly
+     * or through other types, which CQL cannot create.
+     *
+     * @param {string} name The type that reaches itself.
+     * @param {string} entity The name of the entity class the schema is built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static recursiveUdt(name: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `User-defined type ${quote(name)} contains itself (reached from entity ${entity}). ` +
+                'CQL types cannot be recursive; break the cycle by storing the nested value in another way.'
+        );
+    }
+
+    /**
+     * Builds the error for a user-defined type with no fields.
+     *
+     * @param {string} name The type with no fields.
+     * @param {string} entity The name of the entity class the schema is built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static emptyUdt(name: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `User-defined type ${quote(name)} (reached from entity ${entity}) declares no fields. ` +
+                'Add at least one field to its fields object.'
+        );
+    }
+
+    /**
+     * Builds the error for an entity whose keyspace synchronize() cannot
+     * determine, which it needs to read the live schema.
+     *
+     * @param {string} entity The name of the entity class being synchronized.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static unknownKeyspace(entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Cannot synchronize entity ${entity} with alter: true: its keyspace is unknown. ` +
+                "Qualify the table name ('keyspace.table') or connect with a keyspace."
         );
     }
 
@@ -627,6 +719,16 @@ export class InvalidQueryError extends ScyllormError {
         return new InvalidQueryError(
             `Invalid concurrency ${quote(String(concurrency))}. Concurrency must be a positive integer.`
         );
+    }
+
+    /**
+     * Builds the error for a token-range split count that is not a positive integer.
+     *
+     * @param {unknown} splits The rejected split count, as supplied.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidSplits(splits: unknown): InvalidQueryError {
+        return new InvalidQueryError(`Invalid splits ${quote(String(splits))}. Splits must be a positive integer.`);
     }
 
     /**

@@ -444,8 +444,9 @@ try {
 Your entities already describe the schema, so Scyllorm can write the DDL for you:
 `dataSource.synchronize()` runs one `CREATE TABLE IF NOT EXISTS` per entity, then
 one `CREATE INDEX IF NOT EXISTS` per `@Index`. It is an explicit opt-in call —
-never automatic on `initialize()`, and it never `ALTER`s or `DROP`s anything, so
-an existing table is left exactly as it was.
+never automatic on `initialize()`, and by default it never `ALTER`s or `DROP`s anything, so
+an existing table is left exactly as it was. Entities with user-defined types get their
+`CREATE TYPE IF NOT EXISTS` first (§20); `{ alter: true }` adds missing columns (§21).
 
 Collection columns declare their element type with `of`, and clustering keys can
 pick a direction with `order` (rendered as `WITH CLUSTERING ORDER BY`). To keep
@@ -944,11 +945,137 @@ id: types.Uuid | string;
 event_id: types.TimeUuid | string;
 ```
 
+### 20. User-Defined Types 🧩
+
+Declare the type once as a plain object and point columns at it with `udt`.
+`synchronize()` (and `buildSchema()` / `buildCreateTypes()`) emit
+`CREATE TYPE IF NOT EXISTS` before the table, nested types first, each type once.
+Columns are `frozen<...>` by default; `frozen: false` renders the bare type (a type with
+a collection field throws `InvalidQueryError` locally, since the server refuses it).
+Collection elements are always frozen.
+
+```typescript
+import { BaseModel, Column, Entity, PrimaryKeyColumn, UserDefinedType } from 'scyllorm';
+
+const geo: UserDefinedType = { name: 'geo', fields: { lat: 'DOUBLE', lon: 'DOUBLE' } };
+const address: UserDefinedType = {
+    name: 'address',
+    fields: { street: 'TEXT', zip: 'TEXT', tags: { type: 'LIST', of: 'TEXT' }, geo: { type: 'UDT', udt: geo } },
+};
+
+type Address = {
+    street: string;
+    zip: string;
+    tags: string[];
+    geo: { lat: number; lon: number };
+};
+
+@Entity('shop.customers')
+export class Customer extends BaseModel {
+    @PrimaryKeyColumn('UUID', { partitionKey: true })
+    id: string;
+
+    @Column('UDT', { udt: address })
+    home: Address;
+
+    @Column('LIST', { of: 'UDT', udt: address })
+    previous: Address[];
+}
+```
+
+```cql
+CREATE TYPE IF NOT EXISTS shop.geo (lat double, lon double)
+CREATE TYPE IF NOT EXISTS shop.address (street text, zip text, tags list<text>, geo frozen<geo>)
+CREATE TABLE IF NOT EXISTS shop.customers (id uuid, home frozen<address>, previous list<frozen<address>>, PRIMARY KEY (id))
+```
+
+Values are plain objects, written and read as-is (a read carries every field, `null`
+when unset). Types follow the table's keyspace qualifier, since a table can only use
+types of its own keyspace. A `udt: 'address'` string names a type you manage yourself;
+it is never created.
+
+- **Field names must be lowercase** (`street`, `zip_code`): the driver matches object
+  keys to the server's folded field names exactly and _silently drops_ the rest. For the
+  same reason, writing a key that is not a declared field (`{ stret: '…' }`) throws
+  `ColumnValidationError` before the query; an undeclared key holding `null`/`undefined`
+  passes, so a row read back from a wider live type can be saved again. Nested values
+  and UDTs inside collections are not checked.
+- A type declared twice with different fields, one that contains itself, one without
+  fields, a `COUNTER` field or a field named `constructor` or `operator` throws
+  `InvalidQueryError` locally.
+- A plain object is a valid condition value against a UDT column (`findBy({ home: addr })`,
+  `In()`), and against a collection of UDTs for `Contains()`. Against any other column
+  it is still refused as a mis-shaped condition. A value that owns an `operator` key is
+  read as an operator object, which matters for a type named by string `udt`.
+  In TypeScript, `findBy({ home: addr })` only type-checks when every field of `addr` is a
+  non-null scalar (or a nested object of those). For any other value — a list field, or the
+  nullable fields a read returns — write the equality as `findBy({ home: In([addr]) })`,
+  whose type parameter takes any object.
+- UDTs bind only in prepared statements, which is every statement Scyllorm builds unless
+  you pass `prepare: false`.
+- A MAP keyed by a UDT needs `encoding: { map: Map }` in the client options; without it a
+  JS Map is written as nothing and every key reads back as `'[object Object]'`.
+
+### 21. Adding Columns with `synchronize({ alter: true })` 🔧
+
+Opt in and `synchronize()` also reads each table and type back from `system_schema` and
+adds what is missing — new columns (`STATIC` ones included) with `ALTER TABLE ... ADD`,
+new UDT fields with `ALTER TYPE ... ADD` — then creates the indexes, so a new column can
+be indexed in the same call:
+
+```typescript
+await dataSource.synchronize([Customer, Order], { alter: true });
+```
+
+It never drops or changes anything. A column whose type differs, a key whose role, position or clustering order differs, a
+column that is static on one side only, or a column the entity no longer declares is
+logged through `logger.warn` and left alone. Running it again on an up-to-date schema
+issues no `ALTER`. The keyspace comes from the table name (`shop.customers`) or the
+connection's `keyspace`; with neither, `InvalidQueryError` is thrown before that entity's
+DDL. `ALTER` is not idempotent, so it is never retried.
+
+### 22. Full-Table Scans and Partition Aggregates 🔭
+
+**Token-range scan.** `scan()` cuts the token ring into `splits` ranges and reads
+`concurrency` of them at once — ScyllaDB's recommended way to read a whole table for a
+backfill or an export. Rows arrive in no particular order; memory stays bounded by about
+`concurrency` pages. Entities are mapped like `find()` (transformers, `afterLoad`).
+
+```typescript
+for await (const customer of customers.scan({ concurrency: 16, splits: 256, fetchSize: 1000 })) {
+    await exportRow(customer);
+}
+```
+
+Defaults: `concurrency` 16, `splits` `concurrency * 4`. Also takes `select` and
+`consistency`. It assumes the Murmur3 partitioner (the default of ScyllaDB and
+Cassandra), and rows written during the scan may or may not be seen. Breaking out of the
+loop stops cleanly: no new range is started and in-flight pages are awaited.
+
+**Aggregates.** `sum()`, `avg()`, `min()` and `max()` run `SELECT fn(col) AS value ...`
+with the same conditions as `countBy()`:
+
+```typescript
+const total = await readings.sum('value', { sensor_id: 7, day: '2026-10-19' });
+const latest = await readings.max('taken_at', { sensor_id: 7, day: '2026-10-19' }); // a Date
+```
+
+They are meant for **one partition** — pin the full partition key; across partitions they
+are full scans (non-key conditions need `allowFiltering`). `sum`/`avg` only take numeric
+columns (else `InvalidQueryError`) and return what the driver gives for the type: a
+number, or a `Long` / `Integer` / `BigDecimal` for BIGINT/COUNTER, VARINT and DECIMAL —
+the type's zero when nothing matched. They see stored values, untouched by transformers.
+`min`/`max` convert like a read of the column (Date, string UUID, `transformer.from`) and
+return `null` when nothing matched. Two server rules to know: a TINYINT, SMALLINT or INT
+sum overflows at the column's own width (the server rejects it), and `avg` of an integer
+column is truncated. For either, use `runRawQuery` with `sum(cast(c AS bigint))` or
+`avg(cast(c AS double))`.
+
 ### Supported Column Types
 
 Scyllorm supports the following CQL column types:
 
-`ASCII` · `BIGINT` · `BLOB` · `BOOLEAN` · `COUNTER` · `DATE` · `DECIMAL` · `DOUBLE` · `DURATION` · `FLOAT` · `FROZEN` · `INET` · `INT` · `LIST` · `MAP` · `SET` · `SMALLINT` · `TINYINT` · `TIME` · `TIMESTAMP` · `TIMEUUID` · `TEXT` · `TUPLE` · `UUID` · `VARINT` · `VARCHAR`
+`ASCII` · `BIGINT` · `BLOB` · `BOOLEAN` · `COUNTER` · `DATE` · `DECIMAL` · `DOUBLE` · `DURATION` · `FLOAT` · `FROZEN` · `INET` · `INT` · `LIST` · `MAP` · `SET` · `SMALLINT` · `TINYINT` · `TIME` · `TIMESTAMP` · `TIMEUUID` · `TEXT` · `TUPLE` · `UDT` (§20) · `UUID` · `VARINT` · `VARCHAR`
 
 And that’s it! If you followed along and didn’t encounter any errors, you’re officially ready to start messing with ScyllaDB using TypeScript in Node.js. Congratulations! 🎉🌊🦑💻
 

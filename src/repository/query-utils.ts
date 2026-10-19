@@ -109,6 +109,18 @@ export interface ConcurrencyOptions {
     concurrency?: number;
 }
 
+/** Options for `Repository.scan()`. */
+export interface ScanOptions extends ConsistencyOptions {
+    /** How many token ranges are read at once; a positive integer, 16 by default. */
+    concurrency?: number;
+    /** How many token ranges the ring is cut into; a positive integer, `concurrency * 4` by default. */
+    splits?: number;
+    /** The page size of each range query. */
+    fetchSize?: number;
+    /** The columns to read instead of `*`, as `FindOptions.select`. */
+    select?: string[];
+}
+
 /** The values for a raw query's `:name` placeholders, keyed by name without the colon. */
 export interface RawQueryParams {
     [name: string]: BindableValue;
@@ -195,10 +207,11 @@ export interface Page<T> {
 }
 
 // Utility functions for various operations
-export function In<T extends SimpleConditionValue>(values: T[]): Condition {
+export function In<T extends SimpleConditionValue | object>(values: T[]): Condition {
     return {
         operator: 'IN',
-        value: values,
+        // A plain object is a UDT value; whether the column takes one is checked when the query is built
+        value: values as SimpleConditionValue[],
     };
 }
 
@@ -250,10 +263,10 @@ export function Between<T extends SimpleConditionValue>(from: T, to: T): Conditi
  * ScyllaDB requires an index on the collection or `allowFiltering` for this
  * operator.
  */
-export function Contains<T extends SimpleConditionValue>(value: T): Condition {
+export function Contains<T extends SimpleConditionValue | object>(value: T): Condition {
     return {
         operator: 'CONTAINS',
-        value,
+        value: value as SimpleConditionValue,
     };
 }
 
@@ -263,10 +276,10 @@ export function Contains<T extends SimpleConditionValue>(value: T): Condition {
  * ScyllaDB requires an index on the map's keys or `allowFiltering` for this
  * operator.
  */
-export function ContainsKey<T extends SimpleConditionValue>(key: T): Condition {
+export function ContainsKey<T extends SimpleConditionValue | object>(key: T): Condition {
     return {
         operator: 'CONTAINS KEY',
-        value: key,
+        value: key as SimpleConditionValue,
     };
 }
 
