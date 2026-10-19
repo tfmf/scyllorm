@@ -630,6 +630,16 @@ export class InvalidQueryError extends ScyllormError {
     }
 
     /**
+     * Builds the error for a token-range split count that is not a positive integer.
+     *
+     * @param {unknown} splits The rejected split count, as supplied.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static invalidSplits(splits: unknown): InvalidQueryError {
+        return new InvalidQueryError(`Invalid splits ${quote(String(splits))}. Splits must be a positive integer.`);
+    }
+
+    /**
      * Builds the error for a batch mixing counter updates with other
      * statements, which CQL requires to go in separate batches.
      *

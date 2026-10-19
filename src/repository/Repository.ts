@@ -27,9 +27,11 @@ import {
     RawQueryOptions,
     RawQueryParams,
     RawRow,
+    ScanOptions,
     UpdateValues,
     WriteOptions,
 } from './query-utils';
+import { splitTokenRing, streamConcurrent } from './token-ranges';
 
 /**
  * The property-to-column map for each entity class, built once on first use.
@@ -429,6 +431,68 @@ export class Repository<T extends BaseModel> {
 
         for await (const row of this.dataSource.streamQuery<T>(query, params, this.buildQueryOptions(options))) {
             yield await this.loadEntity(row);
+        }
+    }
+
+    /**
+     * Read the whole table by cutting the token ring into ranges and reading several at once.
+     *
+     * For full-table jobs (backfills, exports); this is ScyllaDB's recommended way to scan a table.
+     * Rows come in no particular order. Memory is bounded by `concurrency` pages. It assumes the
+     * Murmur3 partitioner (the default of ScyllaDB and Cassandra). Rows written during the scan may
+     * or may not be seen. Entities are mapped like `find()`, so `afterLoad` and transformers apply.
+     * @param {ScanOptions} [options] The concurrency, number of token ranges, page size, projection
+     *     and consistency.
+     * @returns {AsyncIterableIterator<T>} An async iterator over every entity.
+     * @throws {InvalidQueryError} If the entity has no partition key, `concurrency` or `splits` is not
+     *     a positive integer, or `select` is empty or names an unknown column. Thrown on the first
+     *     advance of the iterator, not on the call, as with any async generator.
+     */
+    public async *scan(options?: ScanOptions): AsyncIterableIterator<T> {
+        const concurrency = options?.concurrency ?? 16;
+        const splits = options?.splits ?? concurrency * 4;
+
+        if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+            throw InvalidQueryError.invalidConcurrency(concurrency);
+        }
+        if (!Number.isSafeInteger(splits) || splits < 1) {
+            throw InvalidQueryError.invalidSplits(splits);
+        }
+
+        const partitionKeys = this.entityClass
+            .getPrimaryKeys()
+            .filter((key) => key.options?.partitionKey === true)
+            .map((key) => this.assertColumn(key.name));
+
+        if (partitionKeys.length === 0) {
+            throw InvalidQueryError.missingPartitionKey(this.entityClass.name);
+        }
+
+        let projection = '*';
+
+        if (options?.select !== undefined) {
+            if (options.select.length === 0) {
+                throw InvalidQueryError.emptyConditions('select clause', this.entityClass.name);
+            }
+            projection = options.select.map((key) => this.assertColumn(key)).join(', ');
+        }
+
+        const token = `token(${partitionKeys.join(', ')})`;
+        const query = `SELECT ${projection} FROM ${this.entityClass.getTableName()} WHERE ${token} > ? AND ${token} <= ?`;
+        const ranges = splitTokenRing(splits);
+        const queryOptions = this.buildQueryOptions(options);
+
+        const pages = streamConcurrent<T>(ranges.length, concurrency, (task, pageState) =>
+            this.dataSource.executeQueryPage<T>(query, ranges[task], {
+                ...queryOptions,
+                ...(pageState !== undefined && { pageState }),
+            })
+        );
+
+        for await (const rows of pages) {
+            for (const entity of await this.loadEntities(rows)) {
+                yield entity;
+            }
         }
     }
 
