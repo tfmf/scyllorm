@@ -1007,8 +1007,10 @@ it is never created.
   `In()`), and against a collection of UDTs for `Contains()`. Against any other column
   it is still refused as a mis-shaped condition. A value that owns an `operator` key is
   read as an operator object, which matters for a type named by string `udt`.
-  In TypeScript, declare such value types with `type` rather than `interface` (as above),
-  or pass `{ ...value }`: an interface has no index signature, so `findBy()` refuses it.
+  In TypeScript, `findBy({ home: addr })` only type-checks when every field of `addr` is a
+  non-null scalar (or a nested object of those). For any other value — a list field, or the
+  nullable fields a read returns — write the equality as `findBy({ home: In([addr]) })`,
+  whose type parameter takes any object.
 - UDTs bind only in prepared statements, which is every statement Scyllorm builds unless
   you pass `prepare: false`.
 - A MAP keyed by a UDT needs `encoding: { map: Map }` in the client options; without it a

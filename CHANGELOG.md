@@ -52,6 +52,9 @@ Breaking changes increment the major version.
       its own. At runtime the subclass's member shadows the new one, as before.
       The same holds for the new private helpers `runAggregate`, `numericAggregate` and
       `extremum` on `Repository`, and `keyspaceOf` and `applyDiff` on `DataSource`.
+    - `DataSource.synchronize()` gains an optional second parameter `options?: SynchronizeOptions`.
+      A `DataSource` subclass that overrides `synchronize` with a second parameter of its own
+      must accept `SynchronizeOptions` there, or move its parameter.
 
 ## [0.8.0] - 2026-10-11
 
