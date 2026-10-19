@@ -68,6 +68,27 @@ describe('buildCreateTypes()', () => {
         expect(() => buildCreateTypes(Clash)).toThrow(/defined twice/);
     });
 
+    it('treats definitions that differ only in the case of a nested type name as one', () => {
+        const pin: UserDefinedType = { name: 'pin', fields: { x: 'INT' } };
+
+        @Entity('cased')
+        class Cased extends BaseModel {
+            @PrimaryKeyColumn('UUID', { partitionKey: true })
+            id: string;
+
+            @Column('UDT', { udt: { name: 'spot', fields: { at: { type: 'UDT', udt: pin } } } })
+            a: unknown;
+
+            @Column('UDT', { udt: { name: 'spot', fields: { at: { type: 'UDT', udt: 'PIN' } } } })
+            b: unknown;
+        }
+
+        expect(buildCreateTypes(Cased)).toEqual([
+            'CREATE TYPE IF NOT EXISTS pin (x int)',
+            'CREATE TYPE IF NOT EXISTS spot (at frozen<pin>)',
+        ]);
+    });
+
     it('rejects a type that reaches itself, directly or through another', () => {
         const a: UserDefinedType = { name: 'a', fields: {} };
         const b: UserDefinedType = { name: 'b', fields: { a: { type: 'UDT', udt: a } } };

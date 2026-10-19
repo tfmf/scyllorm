@@ -413,11 +413,12 @@ export class DataSource {
      */
     public async synchronize(entities: Array<typeof BaseModel>, options?: SynchronizeOptions): Promise<void> {
         const alter = options?.alter === true;
-        // The statement that created each type in this call, by case-folded qualified name
+        // The definition each type was created with in this call, by case-folded qualified name; folded
+        // too, since every part of it is an unquoted identifier or a lowercase field name to the server
         const createdTypes = new Map<string, string>();
 
         for (const entity of entities) {
-            // Everything is built before anything runs, so an invalid entity leaves no partial DDL behind
+            // Everything is built and checked before anything runs, so an invalid entity leaves no partial DDL behind
             const types = planTypes(entity);
             const table = buildCreateTable(entity);
             const indexes = buildCreateIndexes(entity);
@@ -426,22 +427,24 @@ export class DataSource {
             for (const plan of types) {
                 const earlier = createdTypes.get(plan.qualified);
 
-                if (earlier === plan.statement) {
+                if (earlier !== undefined && earlier !== plan.definition.toLowerCase()) {
+                    throw InvalidQueryError.conflictingUdt(plan.name, entity.name);
+                }
+            }
+
+            for (const plan of types) {
+                if (createdTypes.has(plan.qualified)) {
                     continue;
                 }
 
-                if (earlier !== undefined) {
-                    throw InvalidQueryError.conflictingUdt(plan.name, entity.name);
-                }
-
-                createdTypes.set(plan.qualified, plan.statement);
+                createdTypes.set(plan.qualified, plan.definition.toLowerCase());
                 // IF NOT EXISTS makes every statement safe to run twice
                 await this.executeQuery(plan.statement, [], { prepare: false, isIdempotent: true });
 
                 if (alter) {
                     const [row] = await this.executeQuery<ExistingType>(
                         'SELECT field_names, field_types FROM system_schema.types WHERE keyspace_name = ? AND type_name = ?',
-                        [keyspace.toLowerCase(), plan.name.toLowerCase()],
+                        [keyspace, plan.name.toLowerCase()],
                         { prepare: true }
                     );
 
@@ -454,7 +457,7 @@ export class DataSource {
             if (alter) {
                 const rows = await this.executeQuery<ExistingColumn>(
                     'SELECT column_name, kind, type FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ?',
-                    [keyspace.toLowerCase(), entity.getTableName().split('.').pop()!.toLowerCase()],
+                    [keyspace, entity.getTableName().split('.').pop()!.toLowerCase()],
                     { prepare: true }
                 );
 
@@ -477,7 +480,8 @@ export class DataSource {
     private keyspaceOf(entity: typeof BaseModel): string {
         const table = entity.getTableName();
         const keyspace = table.includes('.')
-            ? table.slice(0, table.indexOf('.'))
+            ? // An unquoted qualifier, which the server folds; a connection keyspace is used as the driver holds it
+              table.slice(0, table.indexOf('.')).toLowerCase()
             : (this.client.keyspace ?? this.clientOptions.keyspace);
 
         if (!keyspace) {

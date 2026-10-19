@@ -360,7 +360,7 @@ export function planTypes(entity: typeof BaseModel): TypePlan[] {
                 definition,
                 statement: `CREATE TYPE IF NOT EXISTS ${prefix}${name} ${definition}`,
             });
-        } else if (existing.definition !== definition) {
+        } else if (existing.definition.toLowerCase() !== definition.toLowerCase()) {
             throw InvalidQueryError.conflictingUdt(name, entityName);
         }
     };

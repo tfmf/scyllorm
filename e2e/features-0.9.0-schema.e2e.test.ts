@@ -198,4 +198,79 @@ describe('0.9.0 schema (e2e)', () => {
             spy.mockRestore();
         });
     });
+
+    describe('alter on a connection keyspace with capitals', () => {
+        const MIXED = 'ScyllormV090Mixed';
+        const pin1: UserDefinedType = { name: 'pin', fields: { x: 'INT' } };
+        const pin2: UserDefinedType = { name: 'pin', fields: { x: 'INT', y: 'INT' } };
+
+        @Entity('items')
+        class ItemV1 extends BaseModel {
+            @PrimaryKeyColumn('INT', { partitionKey: true })
+            id: number;
+
+            @Column('UDT', { udt: pin1 })
+            p: { x: number };
+        }
+
+        @Entity('items')
+        class ItemV2 extends BaseModel {
+            @PrimaryKeyColumn('INT', { partitionKey: true })
+            id: number;
+
+            @Column('UDT', { udt: pin2 })
+            p: { x: number; y: number };
+
+            @Column('TEXT')
+            added: string;
+        }
+
+        let mixed: DataSource;
+
+        beforeAll(async () => {
+            await ds.executeQuery(
+                `CREATE KEYSPACE IF NOT EXISTS "${MIXED}" ` +
+                    "WITH replication = { 'class': 'SimpleStrategy', 'replication_factor': 1 } " +
+                    "AND tablets = { 'enabled': false }",
+                [],
+                { prepare: false }
+            );
+            mixed = new DataSource({
+                contactPoints: ['127.0.0.1'],
+                localDataCenter: 'datacenter1',
+                keyspace: MIXED,
+                logger,
+            });
+            await mixed.initialize();
+        });
+
+        afterAll(async () => {
+            try {
+                await mixed?.shutdown();
+            } finally {
+                await ds.executeQuery(`DROP KEYSPACE IF EXISTS "${MIXED}"`, [], { prepare: false });
+            }
+        });
+
+        it('reads the quoted keyspace back and adds the missing field and column', async () => {
+            await mixed.synchronize([ItemV1]);
+            warnings.length = 0;
+
+            const spy = vi.spyOn(mixed, 'executeQuery');
+            await mixed.synchronize([ItemV2], { alter: true });
+
+            expect(alters(spy)).toEqual(['ALTER TYPE pin ADD y int', 'ALTER TABLE items ADD added text']);
+            expect(warnings).toEqual([]);
+            spy.mockRestore();
+
+            const items = mixed.getRepository(ItemV2);
+            const item = new ItemV2();
+            item.id = 1;
+            item.p = { x: 1, y: 2 };
+            item.added = 'yes';
+            await items.save(item);
+
+            expect(await items.findOneBy({ id: 1 })).toMatchObject({ p: { x: 1, y: 2 }, added: 'yes' });
+        });
+    });
 });

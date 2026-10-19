@@ -47,6 +47,8 @@ Breaking changes increment the major version.
     - `Repository` gains `scan`, `sum`, `avg`, `min` and `max`. A `Repository` subclass that
       already has a member with one of these names must match the new signature or rename
       its own. At runtime the subclass's member shadows the new one, as before.
+      The same holds for the new private helpers `runAggregate`, `numericAggregate` and
+      `extremum` on `Repository`, and `keyspaceOf` and `applyDiff` on `DataSource`.
 
 ## [0.8.0] - 2026-10-11
 

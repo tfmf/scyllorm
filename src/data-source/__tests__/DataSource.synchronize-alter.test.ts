@@ -116,6 +116,41 @@ describe('synchronize() without alter', () => {
         expect(calls.map((c) => c.query)).toEqual([TYPE, TABLE, INDEX]);
     });
 
+    it('checks every type of an entity before running any of its DDL', async () => {
+        @Entity('ks.stray')
+        class Stray extends BaseModel {
+            @PrimaryKeyColumn('INT', { partitionKey: true })
+            id: number;
+
+            @Column('UDT', { udt: { name: 'pin', fields: { x: 'INT' } } })
+            pin: unknown;
+
+            @Column('UDT', { udt: { name: 'geo', fields: { lat: 'INT' } } })
+            loc: unknown;
+        }
+
+        const { ds, calls } = setup();
+
+        await expect(ds.synchronize([Shop, Stray])).rejects.toThrow(/defined twice/);
+        expect(calls.map((c) => c.query)).toEqual([TYPE, TABLE, INDEX]);
+    });
+
+    it('treats one type reached through differently cased qualifiers as the same type', async () => {
+        @Entity('KS.upper')
+        class Upper extends BaseModel {
+            @PrimaryKeyColumn('INT', { partitionKey: true })
+            id: number;
+
+            @Column('UDT', { udt: geo })
+            loc: unknown;
+        }
+
+        const { ds, calls } = setup();
+        await ds.synchronize([Shop, Upper]);
+
+        expect(calls.map((c) => c.query).filter((q) => q.startsWith('CREATE TYPE'))).toEqual([TYPE]);
+    });
+
     it('never reads system_schema and does not need a keyspace', async () => {
         const { ds, calls } = setup();
         await ds.synchronize([Bare]);
@@ -187,7 +222,7 @@ describe('synchronize() with alter', () => {
         expect(calls.filter((c) => c.query.includes('system_schema.types'))).toHaveLength(1);
     });
 
-    it('resolves an unqualified table against the connection keyspace', async () => {
+    it('resolves an unqualified table against the connection keyspace, kept as the driver holds it', async () => {
         const { ds, calls } = setup(
             { columns: [{ column_name: 'id', kind: 'partition_key', type: 'uuid' }] },
             {
@@ -198,7 +233,8 @@ describe('synchronize() with alter', () => {
 
         const read = calls.find((c) => c.query.includes('system_schema.columns'));
 
-        expect(read?.params).toEqual(['main', 'bare']);
+        // The driver USEs the keyspace quoted, so its case is the keyspace's own
+        expect(read?.params).toEqual(['Main', 'bare']);
     });
 
     it('throws unknownKeyspace before any statement of that entity', async () => {
