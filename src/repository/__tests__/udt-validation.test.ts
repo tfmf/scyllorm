@@ -5,7 +5,7 @@ import { Entity } from '../../decorators/Entity';
 import { Column, UserDefinedType } from '../../decorators/Column';
 import { PrimaryKeyColumn } from '../../decorators/PrimaryKey';
 import { ColumnValidationError, InvalidQueryError } from '../../errors';
-import { Contains, In } from '../query-utils';
+import { Contains, ContainsKey, In } from '../query-utils';
 import { validateColumnValue } from '../type-validation';
 
 const geo: UserDefinedType = { name: 'geo', fields: { lat: 'DOUBLE', lon: 'DOUBLE' } };
@@ -67,6 +67,15 @@ class Shop extends BaseModel {
 
     @Column('LIST', { of: 'UDT', udt: geo })
     stops: unknown[];
+
+    @Column('MAP', { of: ['TEXT', 'UDT'], udt: geo })
+    byName: unknown;
+
+    @Column('MAP', { of: ['UDT', 'INT'], udt: geo })
+    byGeo: unknown;
+
+    @Column('MAP', { of: ['TEXT', 'INT'] })
+    counts: unknown;
 
     @Column('INT')
     visits: number;
@@ -133,6 +142,21 @@ describe('Repository with UDT columns', () => {
                 ['SELECT * FROM shops WHERE stops CONTAINS ? ALLOW FILTERING', [at]],
                 ['SELECT sum(visits) AS value FROM shops WHERE loc = ? ALLOW FILTERING', [at]],
             ]);
+        });
+
+        it('binds a plain object for Contains() and ContainsKey() on a MAP of UDTs, but not on another MAP', async () => {
+            const { repo, spy } = setup();
+            await repo.findBy({ byName: Contains(at) }, true);
+            await repo.findBy({ byGeo: ContainsKey(at) }, true);
+
+            expect(spy.mock.calls.map((call) => [call[0], call[1]])).toEqual([
+                ['SELECT * FROM shops WHERE byName CONTAINS ? ALLOW FILTERING', [at]],
+                ['SELECT * FROM shops WHERE byGeo CONTAINS KEY ? ALLOW FILTERING', [at]],
+            ]);
+
+            spy.mockClear();
+            await expect(repo.findBy({ counts: Contains(at) }, true)).rejects.toThrow(InvalidQueryError);
+            expect(spy).not.toHaveBeenCalled();
         });
 
         it('still refuses a plain object, an array or a Map against other columns', async () => {

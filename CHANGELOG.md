@@ -20,7 +20,8 @@ Breaking changes increment the major version.
   fields, a recursive type, a type without fields, a `COUNTER` field, a field named
   `constructor` or `operator`, or a non-frozen column whose type has a collection field throws
   `InvalidQueryError` before any DDL. Plain objects are accepted as condition values
-  against UDT columns (and as `Contains()` operands on collections of UDTs). A MAP keyed by a UDT needs `encoding: { map: Map }` in the client
+  against UDT columns (and as `Contains()` operands on collections of UDTs). `In()`, `Contains()`
+  and `ContainsKey()` accept them in their (widened) type parameter. A MAP keyed by a UDT needs `encoding: { map: Map }` in the client
   options.
 - **`synchronize(entities, { alter: true })`.** Opt-in. Reads tables and types back from
   `system_schema` and adds missing columns (`STATIC` included) and UDT fields with

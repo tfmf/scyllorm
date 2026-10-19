@@ -207,10 +207,11 @@ export interface Page<T> {
 }
 
 // Utility functions for various operations
-export function In<T extends SimpleConditionValue>(values: T[]): Condition {
+export function In<T extends SimpleConditionValue | object>(values: T[]): Condition {
     return {
         operator: 'IN',
-        value: values,
+        // A plain object is a UDT value; whether the column takes one is checked when the query is built
+        value: values as SimpleConditionValue[],
     };
 }
 
@@ -262,10 +263,10 @@ export function Between<T extends SimpleConditionValue>(from: T, to: T): Conditi
  * ScyllaDB requires an index on the collection or `allowFiltering` for this
  * operator.
  */
-export function Contains<T extends SimpleConditionValue>(value: T): Condition {
+export function Contains<T extends SimpleConditionValue | object>(value: T): Condition {
     return {
         operator: 'CONTAINS',
-        value,
+        value: value as SimpleConditionValue,
     };
 }
 
@@ -275,10 +276,10 @@ export function Contains<T extends SimpleConditionValue>(value: T): Condition {
  * ScyllaDB requires an index on the map's keys or `allowFiltering` for this
  * operator.
  */
-export function ContainsKey<T extends SimpleConditionValue>(key: T): Condition {
+export function ContainsKey<T extends SimpleConditionValue | object>(key: T): Condition {
     return {
         operator: 'CONTAINS KEY',
-        value: key,
+        value: key as SimpleConditionValue,
     };
 }
 

@@ -963,12 +963,12 @@ const address: UserDefinedType = {
     fields: { street: 'TEXT', zip: 'TEXT', tags: { type: 'LIST', of: 'TEXT' }, geo: { type: 'UDT', udt: geo } },
 };
 
-interface Address {
+type Address = {
     street: string;
     zip: string;
     tags: string[];
     geo: { lat: number; lon: number };
-}
+};
 
 @Entity('shop.customers')
 export class Customer extends BaseModel {
@@ -1007,6 +1007,8 @@ it is never created.
   `In()`), and against a collection of UDTs for `Contains()`. Against any other column
   it is still refused as a mis-shaped condition. A value that owns an `operator` key is
   read as an operator object, which matters for a type named by string `udt`.
+  In TypeScript, declare such value types with `type` rather than `interface` (as above),
+  or pass `{ ...value }`: an interface has no index signature, so `findBy()` refuses it.
 - UDTs bind only in prepared statements, which is every statement Scyllorm builds unless
   you pass `prepare: false`.
 - A MAP keyed by a UDT needs `encoding: { map: Map }` in the client options; without it a
