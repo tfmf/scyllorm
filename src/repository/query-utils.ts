@@ -109,6 +109,18 @@ export interface ConcurrencyOptions {
     concurrency?: number;
 }
 
+/** Options for `Repository.scan()`. */
+export interface ScanOptions extends ConsistencyOptions {
+    /** How many token ranges are read at once; a positive integer, 16 by default. */
+    concurrency?: number;
+    /** How many token ranges the ring is cut into; a positive integer, `concurrency * 4` by default. */
+    splits?: number;
+    /** The page size of each range query. */
+    fetchSize?: number;
+    /** The columns to read instead of `*`, as `FindOptions.select`. */
+    select?: string[];
+}
+
 /** The values for a raw query's `:name` placeholders, keyed by name without the colon. */
 export interface RawQueryParams {
     [name: string]: BindableValue;

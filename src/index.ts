@@ -47,6 +47,7 @@ export {
     RawQueryOptions,
     RawQueryParams,
     RawRow,
+    ScanOptions,
     SimpleConditionValue,
     UpdateValues,
     WriteOptions,
