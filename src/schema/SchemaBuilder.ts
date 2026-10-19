@@ -456,7 +456,9 @@ export function diffType(
         return diff;
     }
 
-    const live = new Map(existing.field_names.map((field, i) => [field.toLowerCase(), existing.field_types[i]]));
+    // Live names are kept as stored: system_schema already folds unquoted names, so one with
+    // capitals belongs to a quoted identifier, which is not the field this ORM writes
+    const live = new Map(existing.field_names.map((field, i) => [field, existing.field_types[i]]));
     const declared = renderFields(udt, entity);
 
     for (const [field, type] of declared) {
@@ -502,7 +504,9 @@ export function diffTable(entity: typeof BaseModel, existing: ExistingColumn[]):
         return diff;
     }
 
-    const live = new Map(existing.map((row) => [row.column_name.toLowerCase(), row]));
+    // Kept as stored, like diffType's fields: a capitalised live name is a quoted identifier,
+    // never the unquoted one the entity emits
+    const live = new Map(existing.map((row) => [row.column_name, row]));
     const declared = new Set<string>();
 
     for (const column of entity.columns ?? []) {

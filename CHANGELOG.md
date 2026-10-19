@@ -5,6 +5,49 @@ All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes increment the major version.
 
+## [0.9.0] - 2026-10-19
+
+### Added
+
+- **User-defined types.** `@Column('UDT', { udt })`, where `udt` is a `UserDefinedType`
+  object (`{ name, fields }`) or the name of a type managed elsewhere. LIST/SET/MAP columns
+  take `of: 'UDT'` (elements always frozen). Columns are `frozen<...>` unless
+  `frozen: false`. `synchronize()`, `buildSchema()` and the new `buildCreateTypes()` emit
+  `CREATE TYPE IF NOT EXISTS` before the table, nested types first, qualified with the
+  table's keyspace. Field names must be lowercase, since the driver silently drops object
+  keys that do not match a folded field name. Writing a non-null key that is not a
+  declared field throws `ColumnValidationError`. A type defined twice with different
+  fields, a recursive type, a type without fields or a `COUNTER` field throws
+  `InvalidQueryError`. A MAP keyed by a UDT needs `encoding: { map: Map }` in the client
+  options.
+- **`synchronize(entities, { alter: true })`.** Opt-in. Reads tables and types back from
+  `system_schema` and adds missing columns (`STATIC` included) and UDT fields with
+  `ALTER TABLE/TYPE ... ADD`, then creates indexes. It never drops or changes anything:
+  type, key, static and undeclared-column differences are logged through `logger.warn`.
+  `ALTER` statements are never retried. An unqualified table on a connection without a
+  keyspace throws `InvalidQueryError`.
+- **`Repository.scan(options)`.** Token-range parallel full-table scan as an async
+  iterator: `concurrency` (16), `splits` (`concurrency * 4`), `fetchSize`, `select`,
+  `consistency`. No order guarantee; memory bounded by about `concurrency` pages; assumes
+  the Murmur3 partitioner. New `ScanOptions` type.
+- **`Repository.sum/avg/min/max(column, conditions, allowFiltering?)`.** Partition
+  aggregates. `sum`/`avg` take numeric columns only and return the driver's value for the
+  type (a number, or `Long`/`Integer`/`BigDecimal`). `min`/`max` convert like a read of
+  the column and return `null` when nothing matched.
+- New exports: `buildCreateTypes`, `ScanOptions`, `SynchronizeOptions`,
+  `UserDefinedType`, `UserDefinedTypeField`.
+
+### Changed
+
+- `synchronize()` creates a type shared by several entities once per call.
+- Compatibility notes. These are type-level only; nothing changes at runtime for callers
+  who use none of the above (same CQL, same behaviour):
+    - `ColumnType` gains `'UDT'`. A `Record<ColumnType, ...>` map, or a `switch` over
+      `ColumnType` checked for exhaustiveness, needs a `'UDT'` case.
+    - `Repository` gains `scan`, `sum`, `avg`, `min` and `max`. A `Repository` subclass that
+      already has a member with one of these names must match the new signature or rename
+      its own. At runtime the subclass's member shadows the new one, as before.
+
 ## [0.8.0] - 2026-10-11
 
 ### Added

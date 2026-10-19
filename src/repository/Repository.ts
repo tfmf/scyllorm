@@ -458,8 +458,9 @@ export class Repository<T extends BaseModel> {
      *     and consistency.
      * @returns {AsyncIterableIterator<T>} An async iterator over every entity.
      * @throws {InvalidQueryError} If the entity has no partition key, `concurrency` or `splits` is not
-     *     a positive integer, or `select` is empty or names an unknown column. Thrown on the first
-     *     advance of the iterator, not on the call, as with any async generator.
+     *     a positive integer, or `select` is empty or holds a name that is not an identifier.
+     * @throws {UnknownColumnError} If `select` names a column the entity does not declare.
+     *     Both are thrown on the first advance of the iterator, not on the call, as with any async generator.
      */
     public async *scan(options?: ScanOptions): AsyncIterableIterator<T> {
         const concurrency = options?.concurrency ?? 16;
@@ -1035,14 +1036,15 @@ export class Repository<T extends BaseModel> {
      *
      * Meant for a single partition: the conditions should pin the full partition key. Across
      * partitions it is a full scan, and non-key conditions need `allowFiltering`. No hooks run.
-     * An INT sum can overflow, which the server rejects; declare the column BIGINT, or use
+     * A TINYINT, SMALLINT or INT sum is computed at the column's own width and overflows quickly (a
+     * TINYINT sum past 127), which the server rejects; declare the column BIGINT, or use
      * `runRawQuery` with `sum(cast(c AS bigint))`. The sum covers stored values, untouched by transformers.
      *
      * @param {string} column The numeric column to sum.
      * @param {NestedConditions} conditions The conditions selecting the rows.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {Promise<number | types.Long | types.BigDecimal | types.Integer>} The sum as the driver returns
-     * it for the column type, or 0 when no row matched.
+     * it for the column type; when no row matched, that type's zero (0, or a zero Long, Integer or BigDecimal).
      * @throws {UnknownColumnError} If the column is not declared on the entity.
      * @throws {InvalidQueryError} If the column is not numeric or the conditions are empty.
      */
@@ -1067,7 +1069,7 @@ export class Repository<T extends BaseModel> {
      * @param {NestedConditions} conditions The conditions selecting the rows.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {Promise<number | types.Long | types.BigDecimal | types.Integer>} The average as the driver
-     * returns it for the column type, or 0 when no row matched.
+     * returns it for the column type; when no row matched, that type's zero (0, or a zero Long, Integer or BigDecimal).
      * @throws {UnknownColumnError} If the column is not declared on the entity.
      * @throws {InvalidQueryError} If the column is not numeric or the conditions are empty.
      */

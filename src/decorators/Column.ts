@@ -105,6 +105,10 @@ export interface ColumnOptions {
      *
      * A string names a type managed outside the ORM, which `synchronize()` does
      * not create; an object is created by `synchronize()`.
+     *
+     * A MAP keyed by a UDT needs `encoding: { map: Map }` in the client options:
+     * without it a JS Map is written as nothing, and every key reads back as
+     * the same `'[object Object]'` property.
      */
     udt?: string | UserDefinedType;
     /**

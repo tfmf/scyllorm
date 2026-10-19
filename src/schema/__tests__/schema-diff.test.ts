@@ -91,6 +91,26 @@ describe('diffTable()', () => {
         expect(diff.warnings[0]).toMatch(/column legacy.*not declared/);
     });
 
+    it('treats a capitalised live column as the quoted identifier it is, not the folded one', () => {
+        @Entity('ks.legacy')
+        class Legacy extends BaseModel {
+            @PrimaryKeyColumn('INT', { partitionKey: true })
+            id: number;
+
+            @Column('TEXT')
+            userId: string;
+        }
+
+        const diff = diffTable(Legacy, [
+            { column_name: 'id', kind: 'partition_key', type: 'int' },
+            { column_name: 'userId', kind: 'regular', type: 'text' },
+        ]);
+
+        expect(diff.statements).toEqual(['ALTER TABLE ks.legacy ADD userId text']);
+        expect(diff.warnings).toHaveLength(1);
+        expect(diff.warnings[0]).toMatch(/column userId of table ks.legacy exists in the database but is not declared/);
+    });
+
     it('does nothing for a table that could not be read', () => {
         const diff = diffTable(Event, []);
 
@@ -132,6 +152,19 @@ describe('diffType()', () => {
         expect(diff.warnings).toHaveLength(2);
         expect(diff.warnings[0]).toMatch(/Place.*field street of type address is int/);
         expect(diff.warnings[1]).toMatch(/field old of type address.*not declared/);
+    });
+
+    it('treats a capitalised live field as a quoted identifier, not the declared one', () => {
+        const diff = diffType(
+            udt,
+            '',
+            { field_names: ['Street', 'zip', 'geo'], field_types: ['text', 'text', 'frozen<geo>'] },
+            'Place'
+        );
+
+        expect(diff.statements).toEqual(['ALTER TYPE address ADD street text']);
+        expect(diff.warnings).toHaveLength(1);
+        expect(diff.warnings[0]).toMatch(/field Street of type address.*not declared/);
     });
 
     it('does nothing for a type that could not be read', () => {

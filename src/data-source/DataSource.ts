@@ -411,7 +411,8 @@ export class DataSource {
      * @returns A promise that resolves when every statement has run.
      * @throws {InvalidQueryError} If a type is defined two ways, or, with `alter`, an entity's keyspace is unknown.
      */
-    public async synchronize(entities: Array<typeof BaseModel>, options: SynchronizeOptions = {}): Promise<void> {
+    public async synchronize(entities: Array<typeof BaseModel>, options?: SynchronizeOptions): Promise<void> {
+        const alter = options?.alter === true;
         // The statement that created each type in this call, by case-folded qualified name
         const createdTypes = new Map<string, string>();
 
@@ -420,7 +421,7 @@ export class DataSource {
             const types = planTypes(entity);
             const table = buildCreateTable(entity);
             const indexes = buildCreateIndexes(entity);
-            const keyspace = options.alter ? this.keyspaceOf(entity) : '';
+            const keyspace = alter ? this.keyspaceOf(entity) : '';
 
             for (const plan of types) {
                 const earlier = createdTypes.get(plan.qualified);
@@ -437,7 +438,7 @@ export class DataSource {
                 // IF NOT EXISTS makes every statement safe to run twice
                 await this.executeQuery(plan.statement, [], { prepare: false, isIdempotent: true });
 
-                if (options.alter) {
+                if (alter) {
                     const [row] = await this.executeQuery<ExistingType>(
                         'SELECT field_names, field_types FROM system_schema.types WHERE keyspace_name = ? AND type_name = ?',
                         [keyspace.toLowerCase(), plan.name.toLowerCase()],
@@ -450,7 +451,7 @@ export class DataSource {
 
             await this.executeQuery(table, [], { prepare: false, isIdempotent: true });
 
-            if (options.alter) {
+            if (alter) {
                 const rows = await this.executeQuery<ExistingColumn>(
                     'SELECT column_name, kind, type FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ?',
                     [keyspace.toLowerCase(), entity.getTableName().split('.').pop()!.toLowerCase()],
