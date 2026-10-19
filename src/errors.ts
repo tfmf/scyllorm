@@ -445,6 +445,23 @@ export class InvalidQueryError extends ScyllormError {
     }
 
     /**
+     * Builds the error for sum() or avg() on a column whose type holds no number.
+     *
+     * @param {string} fn The aggregate that was requested, such as `sum`.
+     * @param {string} column The property name the aggregate was requested on.
+     * @param {string} entity The name of the entity class the query was built for.
+     * @param {string} type The declared type of the column.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static nonNumericAggregate(fn: string, column: string, entity: string, type: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `${fn}() cannot aggregate column ${quote(column)} of entity ${entity}: it is declared ${type}, not a ` +
+                'numeric type. sum() and avg() apply to TINYINT, SMALLINT, INT, BIGINT, VARINT, FLOAT, DOUBLE, ' +
+                'DECIMAL and COUNTER columns; use min() or max() for other types.'
+        );
+    }
+
+    /**
      * Builds the error for a schema identifier — a table, column or index name —
      * that is not a legal unquoted CQL identifier. DDL cannot parameterize
      * identifiers, so anything failing this shape never reaches the server.

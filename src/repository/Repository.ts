@@ -31,6 +31,19 @@ import {
     WriteOptions,
 } from './query-utils';
 
+/** The column types sum() and avg() accept: the ones the server can add up. */
+const NUMERIC_TYPES = new Set<string>([
+    'TINYINT',
+    'SMALLINT',
+    'INT',
+    'BIGINT',
+    'VARINT',
+    'FLOAT',
+    'DOUBLE',
+    'DECIMAL',
+    'COUNTER',
+]);
+
 /**
  * The property-to-column map for each entity class, built once on first use.
  *
@@ -950,6 +963,101 @@ export class Repository<T extends BaseModel> {
     }
 
     /**
+     * Sum a numeric column over the rows matching the conditions.
+     *
+     * Meant for a single partition: the conditions should pin the full partition key. Across
+     * partitions it is a full scan, and non-key conditions need `allowFiltering`. No hooks run.
+     * An INT sum can overflow, which the server rejects; declare the column BIGINT, or use
+     * `runRawQuery` with `sum(cast(c AS bigint))`. The sum covers stored values, untouched by transformers.
+     *
+     * @param {string} column The numeric column to sum.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {Promise<number | types.Long | types.BigDecimal | types.Integer>} The sum as the driver returns
+     * it for the column type, or 0 when no row matched.
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     * @throws {InvalidQueryError} If the column is not numeric or the conditions are empty.
+     */
+    public async sum(
+        column: keyof T & string,
+        conditions: NestedConditions,
+        allowFiltering: boolean = false
+    ): Promise<number | types.Long | types.BigDecimal | types.Integer> {
+        return this.numericAggregate('sum', column, conditions, allowFiltering);
+    }
+
+    /**
+     * Average a numeric column over the rows matching the conditions.
+     *
+     * Meant for a single partition: the conditions should pin the full partition key. Across
+     * partitions it is a full scan, and non-key conditions need `allowFiltering`. No hooks run.
+     * The server truncates the average of an integer column (avg(1, 2) is 1); for a fractional
+     * result use `runRawQuery` with `avg(cast(c AS double))`. The average covers stored values,
+     * untouched by transformers.
+     *
+     * @param {string} column The numeric column to average.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {Promise<number | types.Long | types.BigDecimal | types.Integer>} The average as the driver
+     * returns it for the column type, or 0 when no row matched.
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     * @throws {InvalidQueryError} If the column is not numeric or the conditions are empty.
+     */
+    public async avg(
+        column: keyof T & string,
+        conditions: NestedConditions,
+        allowFiltering: boolean = false
+    ): Promise<number | types.Long | types.BigDecimal | types.Integer> {
+        return this.numericAggregate('avg', column, conditions, allowFiltering);
+    }
+
+    /**
+     * Find the smallest value of a column over the rows matching the conditions.
+     *
+     * Meant for a single partition: the conditions should pin the full partition key. Across
+     * partitions it is a full scan, and non-key conditions need `allowFiltering`. No hooks run.
+     * The value is read like a column of a loaded entity: type conversion, then the column's
+     * `transformer.from`.
+     *
+     * @param {string} column The column to inspect.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {Promise<T[K] | null>} The minimum, or null when no row matched.
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     * @throws {InvalidQueryError} If the conditions are empty.
+     */
+    public async min<K extends keyof T & string>(
+        column: K,
+        conditions: NestedConditions,
+        allowFiltering: boolean = false
+    ): Promise<T[K] | null> {
+        return this.extremum('min', column, conditions, allowFiltering);
+    }
+
+    /**
+     * Find the largest value of a column over the rows matching the conditions.
+     *
+     * Meant for a single partition: the conditions should pin the full partition key. Across
+     * partitions it is a full scan, and non-key conditions need `allowFiltering`. No hooks run.
+     * The value is read like a column of a loaded entity: type conversion, then the column's
+     * `transformer.from`.
+     *
+     * @param {string} column The column to inspect.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
+     * @returns {Promise<T[K] | null>} The maximum, or null when no row matched.
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     * @throws {InvalidQueryError} If the conditions are empty.
+     */
+    public async max<K extends keyof T & string>(
+        column: K,
+        conditions: NestedConditions,
+        allowFiltering: boolean = false
+    ): Promise<T[K] | null> {
+        return this.extremum('max', column, conditions, allowFiltering);
+    }
+
+    /**
      * Instantiate an entity from a plain object, without saving it.
      *
      * Only declared columns are copied — an extra key on the input (a request
@@ -1830,6 +1938,90 @@ export class Repository<T extends BaseModel> {
                 transformer !== undefined && value !== null && value !== undefined ? transformer.from(value) : value;
         }
         return entity;
+    }
+
+    /**
+     * Run one aggregate over a column and return the raw `value` cell.
+     *
+     * @param {'sum' | 'avg' | 'min' | 'max'} fn The aggregate; a literal chosen by the caller, never input.
+     * @param {string} key The property name of the column.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} allowFiltering Whether to allow filtering on the query.
+     * @returns {Promise<{ value: any; type: string | undefined }>} The cell as the driver returned it, and the type.
+     * @throws {UnknownColumnError} If the column is not declared on the entity.
+     * @throws {InvalidQueryError} If sum/avg meets a non-numeric column, or the conditions are empty.
+     */
+    private async runAggregate(
+        fn: 'sum' | 'avg' | 'min' | 'max',
+        key: string,
+        conditions: NestedConditions,
+        allowFiltering: boolean
+    ): Promise<{ value: any; type: string | undefined }> {
+        // Resolved first so an unknown column wins over any other complaint
+        const column = this.assertColumn(key);
+        const type = this.columnDefinition(key)?.type;
+
+        if ((fn === 'sum' || fn === 'avg') && !NUMERIC_TYPES.has(type as string)) {
+            throw InvalidQueryError.nonNumericAggregate(fn, key, this.entityClass.name, String(type));
+        }
+
+        const { conditionString, params } = this.buildConditionStringAndParams(conditions);
+        let query = `SELECT ${fn}(${column}) AS value FROM ${this.entityClass.getTableName()} WHERE ${conditionString}`;
+
+        if (allowFiltering) {
+            query += ' ALLOW FILTERING';
+        }
+
+        const rows = await this.dataSource.executeQuery<RawRow>(query, params, this.options);
+
+        return { value: rows[0]?.value, type };
+    }
+
+    /**
+     * Shared body of sum() and avg(): the driver's value, or 0 for an empty result.
+     *
+     * @param {'sum' | 'avg'} fn The aggregate to run.
+     * @param {string} key The property name of the column.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} allowFiltering Whether to allow filtering on the query.
+     * @returns {Promise<number | types.Long | types.BigDecimal | types.Integer>} The aggregate.
+     */
+    private async numericAggregate(
+        fn: 'sum' | 'avg',
+        key: string,
+        conditions: NestedConditions,
+        allowFiltering: boolean
+    ): Promise<number | types.Long | types.BigDecimal | types.Integer> {
+        const { value } = await this.runAggregate(fn, key, conditions, allowFiltering);
+
+        return value === null || value === undefined ? 0 : value;
+    }
+
+    /**
+     * Shared body of min() and max(): the value converted as a read of that column would be.
+     *
+     * @param {'min' | 'max'} fn The aggregate to run.
+     * @param {string} key The property name of the column.
+     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {boolean} allowFiltering Whether to allow filtering on the query.
+     * @returns {Promise<any>} The converted value, or null when there is none.
+     */
+    private async extremum(
+        fn: 'min' | 'max',
+        key: string,
+        conditions: NestedConditions,
+        allowFiltering: boolean
+    ): Promise<any> {
+        const { value, type } = await this.runAggregate(fn, key, conditions, allowFiltering);
+
+        if (value === null || value === undefined) {
+            return null;
+        }
+
+        const converted = this.transformValue(value, type as string);
+        const transformer = this.columnDefinition(key)?.options?.transformer;
+
+        return transformer === undefined ? converted : transformer.from(converted);
     }
 
     /**
