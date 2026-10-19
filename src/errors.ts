@@ -531,6 +531,81 @@ export class InvalidQueryError extends ScyllormError {
     }
 
     /**
+     * Builds the error for a UDT column, or a collection of UDTs, with no
+     * `udt` option to say which type it holds.
+     *
+     * @param {string} column The column being rendered.
+     * @param {string} entity The name of the entity class the schema is built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static missingUdt(column: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Column ${quote(column)} of entity ${entity} holds a UDT but declares no udt option. ` +
+                "Add { udt: 'type_name' } for a type managed elsewhere, or { udt: { name, fields } } " +
+                'to have synchronize() create it.'
+        );
+    }
+
+    /**
+     * Builds the error for two different definitions of one user-defined type
+     * name, which `CREATE TYPE IF NOT EXISTS` would resolve silently by
+     * keeping whichever ran first.
+     *
+     * @param {string} name The type name both definitions use.
+     * @param {string} entity The name of the entity class the schema is built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static conflictingUdt(name: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `User-defined type ${quote(name)} is defined twice with different fields (reached from entity ${entity}). ` +
+                'Share one definition object, or give the types different names.'
+        );
+    }
+
+    /**
+     * Builds the error for a user-defined type that contains itself, directly
+     * or through other types, which CQL cannot create.
+     *
+     * @param {string} name The type that reaches itself.
+     * @param {string} entity The name of the entity class the schema is built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static recursiveUdt(name: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `User-defined type ${quote(name)} contains itself (reached from entity ${entity}). ` +
+                'CQL types cannot be recursive; break the cycle by storing the nested value in another way.'
+        );
+    }
+
+    /**
+     * Builds the error for a user-defined type with no fields.
+     *
+     * @param {string} name The type with no fields.
+     * @param {string} entity The name of the entity class the schema is built for.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static emptyUdt(name: string, entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `User-defined type ${quote(name)} (reached from entity ${entity}) declares no fields. ` +
+                'Add at least one field to its fields object.'
+        );
+    }
+
+    /**
+     * Builds the error for an entity whose keyspace synchronize() cannot
+     * determine, which it needs to read the live schema.
+     *
+     * @param {string} entity The name of the entity class being synchronized.
+     * @returns {InvalidQueryError} The error to throw.
+     */
+    static unknownKeyspace(entity: string): InvalidQueryError {
+        return new InvalidQueryError(
+            `Cannot synchronize entity ${entity} with alter: true: its keyspace is unknown. ` +
+                "Qualify the table name ('keyspace.table') or connect with a keyspace."
+        );
+    }
+
+    /**
      * Builds the error for a batch with no statements in it, which the server
      * would reject a round trip away.
      *

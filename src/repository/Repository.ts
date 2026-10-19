@@ -1532,7 +1532,14 @@ export class Repository<T extends BaseModel> {
         const definition = this.columnDefinition(key);
 
         if (definition !== undefined) {
-            validateColumnValue(this.entityClass.name, key, definition.type, value, definition.options?.validate);
+            validateColumnValue(
+                this.entityClass.name,
+                key,
+                definition.type,
+                value,
+                definition.options?.validate,
+                definition.type === 'UDT' ? definition.options?.udt : undefined
+            );
         }
     }
 

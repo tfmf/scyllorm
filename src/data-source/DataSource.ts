@@ -3,11 +3,22 @@ import { ConnectionOptions, Logger } from './ConnectionOptions';
 import { Repository } from '../repository';
 import { BaseModel } from '../model';
 import { BatchStatement, BindableValue, ConcurrencyOptions, RawRow } from '../repository/query-utils';
-import { buildSchema } from '../schema';
+import { buildCreateIndexes, buildCreateTable } from '../schema';
+import { diffTable, diffType, planTypes, ExistingColumn, ExistingType } from '../schema/SchemaBuilder';
 import { InvalidQueryError } from '../errors';
 
 /** How many queries `executeConcurrent()` and `saveMany()` run at once when the caller does not say. */
 const DEFAULT_CONCURRENCY = 100;
+
+/** Options for {@link DataSource.synchronize}. */
+export interface SynchronizeOptions {
+    /**
+     * Opt in to reconciling existing tables and types with the entities: adds
+     * missing columns and UDT fields. It never drops or changes anything —
+     * every other difference is logged as a warning.
+     */
+    alter?: boolean;
+}
 
 /** A query the caller says nothing about is only assumed safe to run twice if it is a read. */
 const SELECT = /^\s*SELECT\b/i;
@@ -382,21 +393,110 @@ export class DataSource {
     }
 
     /**
-     * Create the tables and indexes for the given entities from their metadata.
+     * Create the types, tables and indexes for the given entities from their metadata.
      *
-     * Runs each entity's `CREATE TABLE IF NOT EXISTS` first, then its
-     * `CREATE INDEX IF NOT EXISTS` statements, in order. DDL is executed with
-     * `prepare: false` — schema statements must not be prepared.
+     * Per entity, runs each `CREATE TYPE IF NOT EXISTS` (dependencies first),
+     * then `CREATE TABLE IF NOT EXISTS`, then the `CREATE INDEX IF NOT EXISTS`
+     * statements, in order. A type shared by several entities is created once
+     * per call. DDL is executed with `prepare: false` — schema statements must
+     * not be prepared.
+     *
+     * With `alter: true`, each type and table is also read back from
+     * `system_schema` and missing columns and UDT fields are added with
+     * `ALTER`; indexes run last so new columns can be indexed. Nothing is
+     * dropped or changed: other differences are logged as warnings.
      *
      * @param entities The entity classes to synchronize.
+     * @param options See {@link SynchronizeOptions}.
      * @returns A promise that resolves when every statement has run.
+     * @throws {InvalidQueryError} If a type is defined two ways, or, with `alter`, an entity's keyspace is unknown.
      */
-    public async synchronize(entities: Array<typeof BaseModel>): Promise<void> {
+    public async synchronize(entities: Array<typeof BaseModel>, options: SynchronizeOptions = {}): Promise<void> {
+        // The statement that created each type in this call, by case-folded qualified name
+        const createdTypes = new Map<string, string>();
+
         for (const entity of entities) {
-            for (const statement of buildSchema(entity)) {
+            // Everything is built before anything runs, so an invalid entity leaves no partial DDL behind
+            const types = planTypes(entity);
+            const table = buildCreateTable(entity);
+            const indexes = buildCreateIndexes(entity);
+            const keyspace = options.alter ? this.keyspaceOf(entity) : '';
+
+            for (const plan of types) {
+                const earlier = createdTypes.get(plan.qualified);
+
+                if (earlier === plan.statement) {
+                    continue;
+                }
+
+                if (earlier !== undefined) {
+                    throw InvalidQueryError.conflictingUdt(plan.name, entity.name);
+                }
+
+                createdTypes.set(plan.qualified, plan.statement);
                 // IF NOT EXISTS makes every statement safe to run twice
+                await this.executeQuery(plan.statement, [], { prepare: false, isIdempotent: true });
+
+                if (options.alter) {
+                    const [row] = await this.executeQuery<ExistingType>(
+                        'SELECT field_names, field_types FROM system_schema.types WHERE keyspace_name = ? AND type_name = ?',
+                        [keyspace.toLowerCase(), plan.name.toLowerCase()],
+                        { prepare: true }
+                    );
+
+                    await this.applyDiff(diffType(plan.udt, plan.prefix, row, entity.name));
+                }
+            }
+
+            await this.executeQuery(table, [], { prepare: false, isIdempotent: true });
+
+            if (options.alter) {
+                const rows = await this.executeQuery<ExistingColumn>(
+                    'SELECT column_name, kind, type FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ?',
+                    [keyspace.toLowerCase(), entity.getTableName().split('.').pop()!.toLowerCase()],
+                    { prepare: true }
+                );
+
+                await this.applyDiff(diffTable(entity, rows));
+            }
+
+            for (const statement of indexes) {
                 await this.executeQuery(statement, [], { prepare: false, isIdempotent: true });
             }
+        }
+    }
+
+    /**
+     * Resolve the keyspace an entity's table lives in: its qualifier, else the connection's.
+     *
+     * @param entity The entity class.
+     * @returns The keyspace name.
+     * @throws {InvalidQueryError} If the table is unqualified and no keyspace is set on the connection.
+     */
+    private keyspaceOf(entity: typeof BaseModel): string {
+        const table = entity.getTableName();
+        const keyspace = table.includes('.')
+            ? table.slice(0, table.indexOf('.'))
+            : (this.client.keyspace ?? this.clientOptions.keyspace);
+
+        if (!keyspace) {
+            throw InvalidQueryError.unknownKeyspace(entity.name);
+        }
+
+        return keyspace;
+    }
+
+    /**
+     * Run the ALTER statements of a schema diff and log its warnings.
+     *
+     * @param diff The statements and warnings.
+     */
+    private async applyDiff(diff: { statements: string[]; warnings: string[] }): Promise<void> {
+        diff.warnings.forEach((warning) => this.logger.warn(warning));
+
+        for (const statement of diff.statements) {
+            // Replaying an ADD fails, so a retry must not happen
+            await this.executeQuery(statement, [], { prepare: false, isIdempotent: false });
         }
     }
 
