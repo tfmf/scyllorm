@@ -65,7 +65,8 @@ export interface UserDefinedTypeField {
  *
  * Field names must be lowercase (`/^[a-z][a-z0-9_]*$/`): the driver matches the
  * keys of a written object to the folded field names exactly and silently drops
- * the rest. `constructor` and other `Object.prototype` member names are refused.
+ * the rest. `constructor` and other `Object.prototype` member names are refused, and
+ * so is `operator`, which would make a value used as a condition read as an operator.
  */
 export interface UserDefinedType {
     /** The type's name: an unqualified schema identifier. */

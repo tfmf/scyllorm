@@ -18,7 +18,7 @@ Breaking changes increment the major version.
   keys that do not match a folded field name. Writing a non-null key that is not a
   declared field throws `ColumnValidationError`. A type defined twice with different
   fields, a recursive type, a type without fields, a `COUNTER` field, a field named
-  `constructor`, or a non-frozen column whose type has a collection field throws
+  `constructor` or `operator`, or a non-frozen column whose type has a collection field throws
   `InvalidQueryError` before any DDL. Plain objects are accepted as condition values
   against UDT columns (and as `Contains()` operands on collections of UDTs). A MAP keyed by a UDT needs `encoding: { map: Map }` in the client
   options.

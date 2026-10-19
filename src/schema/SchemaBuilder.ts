@@ -172,8 +172,9 @@ function renderFields(udt: UserDefinedType, entity: string): Array<[string, stri
 
     return names.map((field) => {
         // A field named after an Object.prototype member (`constructor`) would read the inherited
-        // member whenever a written object leaves it out, which the driver then fails to encode
-        if (!UDT_FIELD_NAME.test(field) || field in Object.prototype) {
+        // member whenever a written object leaves it out, which the driver then fails to encode; and
+        // a value owning `operator` reads as an operator object when used as a condition
+        if (!UDT_FIELD_NAME.test(field) || field in Object.prototype || field === 'operator') {
             throw InvalidQueryError.invalidSchemaIdentifier('field', field, entity);
         }
 

@@ -1001,10 +1001,12 @@ it is never created.
   passes, so a row read back from a wider live type can be saved again. Nested values
   and UDTs inside collections are not checked.
 - A type declared twice with different fields, one that contains itself, one without
-  fields, a `COUNTER` field or a field named `constructor` throws `InvalidQueryError` locally.
+  fields, a `COUNTER` field or a field named `constructor` or `operator` throws
+  `InvalidQueryError` locally.
 - A plain object is a valid condition value against a UDT column (`findBy({ home: addr })`,
   `In()`), and against a collection of UDTs for `Contains()`. Against any other column
-  it is still refused as a mis-shaped condition.
+  it is still refused as a mis-shaped condition. A value that owns an `operator` key is
+  read as an operator object, which matters for a type named by string `udt`.
 - UDTs bind only in prepared statements, which is every statement Scyllorm builds unless
   you pass `prepare: false`.
 - A MAP keyed by a UDT needs `encoding: { map: Map }` in the client options; without it a

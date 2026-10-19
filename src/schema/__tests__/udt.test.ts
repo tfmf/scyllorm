@@ -285,5 +285,30 @@ describe('buildSchema() with UDTs', () => {
             expect(() => buildCreateTypes(Ctor)).toThrow(InvalidQueryError);
             expect(() => buildCreateTypes(Ctor)).toThrow(/constructor/);
         });
+
+        it('rejects a field named operator, top-level or nested, which would read as an operator object', () => {
+            const rule: UserDefinedType = { name: 'rule', fields: { operator: 'TEXT', value: 'TEXT' } };
+
+            @Entity('plans')
+            class Plan extends BaseModel {
+                @PrimaryKeyColumn('INT', { partitionKey: true })
+                id: number;
+
+                @Column('UDT', { udt: rule })
+                carrier: unknown;
+            }
+
+            @Entity('wraps')
+            class Wrap extends BaseModel {
+                @PrimaryKeyColumn('INT', { partitionKey: true })
+                id: number;
+
+                @Column('UDT', { udt: { name: 'wrap', fields: { inner: { type: 'UDT', udt: rule } } } })
+                w: unknown;
+            }
+
+            expect(() => buildSchema(Plan)).toThrow(/operator/);
+            expect(() => buildCreateTypes(Wrap)).toThrow(InvalidQueryError);
+        });
     });
 });
