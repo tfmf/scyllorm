@@ -202,6 +202,39 @@ function isBindable(value: unknown): value is SimpleConditionValue {
 }
 
 /**
+ * Whether a condition value can be bound against a column.
+ *
+ * Plain objects are refused by `isBindable` as mis-shaped conditions, except against a
+ * column that holds user-defined types — a UDT, or a collection of them for `Contains()` —
+ * where a plain object is exactly what the driver binds. A function rather than a method,
+ * so every condition path keeps running the ORM's own check whatever a subclass declares.
+ *
+ * @param {object | undefined} definition The declared column the value is compared against.
+ * @param {unknown} value The value to bind.
+ * @returns {boolean} True if the driver can bind it.
+ */
+function isBindableTo(
+    definition: { type: ColumnType; options?: { of?: unknown } } | undefined,
+    value: unknown
+): value is SimpleConditionValue {
+    if (isBindable(value)) {
+        return true;
+    }
+
+    const of = definition?.options?.of;
+    const holdsUdt = definition?.type === 'UDT' || of === 'UDT' || (Array.isArray(of) && of.includes('UDT'));
+
+    return (
+        holdsUdt &&
+        typeof value === 'object' &&
+        value !== null &&
+        !Array.isArray(value) &&
+        !(value instanceof Map) &&
+        !(value instanceof Set)
+    );
+}
+
+/**
  * Read the value out of a `SELECT COUNT(*)` result set.
  *
  * The driver returns the count as a `Long`, which converts through its decimal
@@ -1752,36 +1785,6 @@ export class Repository<T extends BaseModel> {
     }
 
     /**
-     * Whether a condition value can be bound against a column.
-     *
-     * Plain objects are refused as mis-shaped conditions, except against a column that
-     * holds user-defined types — a UDT, or a collection of them for `Contains()` — where a
-     * plain object is exactly what the driver binds.
-     *
-     * @param {string} key The property name the value is compared against.
-     * @param {unknown} value The value to bind.
-     * @returns {boolean} True if the driver can bind it.
-     */
-    private isBindableTo(key: string, value: unknown): value is SimpleConditionValue {
-        if (isBindable(value)) {
-            return true;
-        }
-
-        const definition = this.columnDefinition(key);
-        const of = definition?.options?.of;
-        const holdsUdt = definition?.type === 'UDT' || of === 'UDT' || (Array.isArray(of) && of.includes('UDT'));
-
-        return (
-            holdsUdt &&
-            typeof value === 'object' &&
-            value !== null &&
-            !Array.isArray(value) &&
-            !(value instanceof Map) &&
-            !(value instanceof Set)
-        );
-    }
-
-    /**
      * Get the entity's column map, building it on first use.
      *
      * Built lazily rather than in the constructor because `getRepository()` is a
@@ -1896,7 +1899,7 @@ export class Repository<T extends BaseModel> {
                         for (let index = 0; index < operand.length; index++) {
                             const element = this.toDatabase(key, operand[index]);
 
-                            if (!this.isBindableTo(key, element)) {
+                            if (!isBindableTo(this.columnDefinition(key), element)) {
                                 throw InvalidQueryError.invalidConditionValue(key, entity, 'IN', element);
                             }
 
@@ -1937,7 +1940,7 @@ export class Repository<T extends BaseModel> {
                     }
                     case 'CONTAINS':
                     case 'CONTAINS KEY': {
-                        if (!this.isBindableTo(key, operand)) {
+                        if (!isBindableTo(this.columnDefinition(key), operand)) {
                             throw InvalidQueryError.invalidConditionValue(key, entity, operator, operand);
                         }
 
@@ -1953,7 +1956,7 @@ export class Repository<T extends BaseModel> {
                     case '=': {
                         const bound = this.toDatabase(key, operand);
 
-                        if (!this.isBindableTo(key, bound)) {
+                        if (!isBindableTo(this.columnDefinition(key), bound)) {
                             throw InvalidQueryError.invalidConditionValue(key, entity, operator, bound);
                         }
 
@@ -1967,7 +1970,7 @@ export class Repository<T extends BaseModel> {
             } else {
                 const bound = this.toDatabase(key, value);
 
-                if (!this.isBindableTo(key, bound)) {
+                if (!isBindableTo(this.columnDefinition(key), bound)) {
                     throw InvalidQueryError.invalidConditionValue(key, entity, '=', bound);
                 }
 
