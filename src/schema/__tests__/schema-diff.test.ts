@@ -91,6 +91,53 @@ describe('diffTable()', () => {
         expect(diff.warnings[0]).toMatch(/column legacy.*not declared/);
     });
 
+    it('warns about a key at another position or with another clustering order', () => {
+        @Entity('ks.k')
+        class Keyed extends BaseModel {
+            @PrimaryKeyColumn('INT', { partitionKey: true })
+            b: number;
+
+            @PrimaryKeyColumn('INT', { partitionKey: true })
+            a: number;
+
+            @PrimaryKeyColumn('INT', { clusteringKey: true })
+            c: number;
+
+            @PrimaryKeyColumn('INT', { clusteringKey: true, order: 'DESC' })
+            d: number;
+        }
+
+        const row = (column_name: string, kind: string, position: number, clustering_order: string) => ({
+            column_name,
+            kind,
+            type: 'int',
+            position,
+            clustering_order,
+        });
+        const same = [
+            row('b', 'partition_key', 0, 'none'),
+            row('a', 'partition_key', 1, 'none'),
+            row('c', 'clustering', 0, 'asc'),
+            row('d', 'clustering', 1, 'desc'),
+        ];
+
+        expect(diffTable(Keyed, same)).toEqual({ statements: [], warnings: [] });
+
+        const diff = diffTable(Keyed, [
+            row('a', 'partition_key', 0, 'none'),
+            row('b', 'partition_key', 1, 'none'),
+            row('c', 'clustering', 0, 'desc'),
+            row('d', 'clustering', 1, 'desc'),
+        ]);
+
+        expect(diff.statements).toEqual([]);
+        expect(diff.warnings).toEqual([
+            'Entity Keyed: key column b of table ks.k is at position 1 in the database but declared at position 0; keys cannot be altered.',
+            'Entity Keyed: key column a of table ks.k is at position 0 in the database but declared at position 1; keys cannot be altered.',
+            'Entity Keyed: key column c of table ks.k is ordered DESC in the database but declared ASC; keys cannot be altered.',
+        ]);
+    });
+
     it('treats a capitalised live column as the quoted identifier it is, not the folded one', () => {
         @Entity('ks.legacy')
         class Legacy extends BaseModel {

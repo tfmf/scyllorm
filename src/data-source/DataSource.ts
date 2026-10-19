@@ -456,7 +456,7 @@ export class DataSource {
 
             if (alter) {
                 const rows = await this.executeQuery<ExistingColumn>(
-                    'SELECT column_name, kind, type FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ?',
+                    'SELECT column_name, kind, type, position, clustering_order FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ?',
                     [keyspace, entity.getTableName().split('.').pop()!.toLowerCase()],
                     { prepare: true }
                 );

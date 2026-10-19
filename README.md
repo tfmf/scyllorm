@@ -1023,7 +1023,7 @@ be indexed in the same call:
 await dataSource.synchronize([Customer, Order], { alter: true });
 ```
 
-It never drops or changes anything. A column whose type differs, a key that differs, a
+It never drops or changes anything. A column whose type differs, a key whose role, position or clustering order differs, a
 column that is static on one side only, or a column the entity no longer declares is
 logged through `logger.warn` and left alone. Running it again on an up-to-date schema
 issues no `ALTER`. The keyspace comes from the table name (`shop.customers`) or the

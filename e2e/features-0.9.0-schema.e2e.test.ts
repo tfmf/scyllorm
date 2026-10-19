@@ -211,6 +211,40 @@ describe('0.9.0 schema (e2e)', () => {
         });
     });
 
+    describe('alter on a table whose key layout differs', () => {
+        @Entity(`${KS}.layout`)
+        class Layout extends BaseModel {
+            @PrimaryKeyColumn('INT', { partitionKey: true })
+            b: number;
+
+            @PrimaryKeyColumn('INT', { partitionKey: true })
+            a: number;
+
+            @PrimaryKeyColumn('INT', { clusteringKey: true })
+            c: number;
+
+            @Column('TEXT')
+            v: string;
+        }
+
+        it('warns about key position and clustering order it cannot alter', async () => {
+            await ds.executeQuery(
+                `CREATE TABLE ${KS}.layout (a int, b int, c int, v text, PRIMARY KEY ((a, b), c)) ` +
+                    'WITH CLUSTERING ORDER BY (c DESC)',
+                [],
+                { prepare: false }
+            );
+            warnings.length = 0;
+            await ds.synchronize([Layout], { alter: true });
+
+            expect(warnings.filter((w) => /key column/.test(w))).toEqual([
+                `Entity Layout: key column b of table ${KS}.layout is at position 1 in the database but declared at position 0; keys cannot be altered.`,
+                `Entity Layout: key column a of table ${KS}.layout is at position 0 in the database but declared at position 1; keys cannot be altered.`,
+                `Entity Layout: key column c of table ${KS}.layout is ordered DESC in the database but declared ASC; keys cannot be altered.`,
+            ]);
+        });
+    });
+
     describe('alter on a connection keyspace with capitals', () => {
         const MIXED = 'ScyllormV090Mixed';
         const pin1: UserDefinedType = { name: 'pin', fields: { x: 'INT' } };

@@ -430,6 +430,10 @@ export interface ExistingColumn {
     column_name: string;
     kind: string;
     type: string;
+    /** Index within the partition or clustering key; -1 for other columns. Unchecked when absent. */
+    position?: number;
+    /** `asc` or `desc` for a clustering key, `none` otherwise. Unchecked when absent. */
+    clustering_order?: string;
 }
 
 /** The row of `system_schema.types` for one type. */
@@ -570,6 +574,38 @@ export function diffTable(entity: typeof BaseModel, existing: ExistingColumn[]):
                 `Entity ${entityName}: column ${name} of table ${table} is ${current.kind} in the database ` +
                     `but declared as ${kind}; not altered.`
             );
+        } else if (key) {
+            // Same role, but the key's place in it or its direction can still differ — which
+            // changes row order and the token() argument order scan() emits
+            const siblings = entity
+                .getPrimaryKeys()
+                .filter((candidate) =>
+                    kind === 'partition_key'
+                        ? candidate.options?.partitionKey === true
+                        : candidate.options?.clusteringKey === true
+                );
+            const position = siblings.indexOf(key);
+
+            if (typeof current.position === 'number' && current.position !== position) {
+                diff.warnings.push(
+                    `Entity ${entityName}: key column ${name} of table ${table} is at position ${current.position} ` +
+                        `in the database but declared at position ${position}; keys cannot be altered.`
+                );
+            }
+
+            const order = (key.options?.order ?? 'ASC').toLowerCase();
+
+            if (
+                kind === 'clustering' &&
+                typeof current.clustering_order === 'string' &&
+                current.clustering_order.toLowerCase() !== order
+            ) {
+                diff.warnings.push(
+                    `Entity ${entityName}: key column ${name} of table ${table} is ordered ` +
+                        `${current.clustering_order.toUpperCase()} in the database but declared ${order.toUpperCase()}; ` +
+                        'keys cannot be altered.'
+                );
+            }
         }
     }
 

@@ -168,7 +168,7 @@ describe('synchronize() with alter', () => {
             TYPE,
             'SELECT field_names, field_types FROM system_schema.types WHERE keyspace_name = ? AND type_name = ?',
             TABLE,
-            'SELECT column_name, kind, type FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ?',
+            'SELECT column_name, kind, type, position, clustering_order FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ?',
             INDEX,
         ]);
         expect(calls[1].params).toEqual(['ks', 'geo']);
