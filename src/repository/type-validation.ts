@@ -1,4 +1,4 @@
-import { ColumnType } from '../decorators/Column';
+import { ColumnType, UserDefinedType } from '../decorators/Column';
 import { ColumnValidationError } from '../errors';
 
 /**
@@ -148,6 +148,11 @@ const RULES: Record<ColumnType, TypeRule> = {
         expected: 'an Array or a driver Tuple',
         accepts: (value) => typeof value === 'object',
     },
+    UDT: {
+        expected: 'a plain object with the fields of the type',
+        accepts: (value) =>
+            typeof value === 'object' && !Array.isArray(value) && !(value instanceof Map) && !(value instanceof Set),
+    },
     // A frozen type's inner shape is not modelled, so nothing can be rejected locally
     FROZEN: {
         expected: 'any value',
@@ -168,6 +173,8 @@ const RULES: Record<ColumnType, TypeRule> = {
  * @param {ColumnType} type The column's declared CQL type.
  * @param {unknown} value The value about to be bound.
  * @param {(value: unknown) => boolean | string} [validate] The column's custom validator, if any.
+ * @param {string | UserDefinedType} [udt] The column's `udt` option. Only a definition object is checked, and
+ *   only the top-level keys of the value: nested values and UDT elements inside collections are not.
  * @throws {ColumnValidationError} If the value fails the type's predicate or the custom validator.
  */
 export function validateColumnValue(
@@ -175,7 +182,8 @@ export function validateColumnValue(
     column: string,
     type: ColumnType,
     value: unknown,
-    validate?: (value: unknown) => boolean | string
+    validate?: (value: unknown) => boolean | string,
+    udt?: string | UserDefinedType
 ): void {
     if (value === null || value === undefined) {
         return;
@@ -186,6 +194,20 @@ export function validateColumnValue(
     // Guarded despite the total Record: a JavaScript caller can declare a type the union does not name
     if (rule !== undefined && !rule.accepts(value)) {
         throw new ColumnValidationError({ column, entity, expected: rule.expected, receivedType: typeof value });
+    }
+
+    if (type === 'UDT' && udt !== undefined && typeof udt === 'object') {
+        // The driver drops keys that are not fields without a word, so a typo would write nothing
+        const allowed = Object.keys(udt.fields);
+
+        if (Object.keys(value as object).some((key) => !allowed.includes(key))) {
+            throw new ColumnValidationError({
+                column,
+                entity,
+                expected: `a plain object whose keys are only: ${allowed.join(', ')}`,
+                receivedType: typeof value,
+            });
+        }
     }
 
     if (validate !== undefined) {

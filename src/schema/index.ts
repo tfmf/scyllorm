@@ -1,1 +1,1 @@
-export { buildCreateTable, buildCreateIndexes, buildSchema } from './SchemaBuilder';
+export { buildCreateTable, buildCreateIndexes, buildCreateTypes, buildSchema } from './SchemaBuilder';
