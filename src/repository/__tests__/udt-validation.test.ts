@@ -4,7 +4,8 @@ import { BaseModel } from '../../model/BaseModel';
 import { Entity } from '../../decorators/Entity';
 import { Column, UserDefinedType } from '../../decorators/Column';
 import { PrimaryKeyColumn } from '../../decorators/PrimaryKey';
-import { ColumnValidationError } from '../../errors';
+import { ColumnValidationError, InvalidQueryError } from '../../errors';
+import { Contains, In } from '../query-utils';
 import { validateColumnValue } from '../type-validation';
 
 const geo: UserDefinedType = { name: 'geo', fields: { lat: 'DOUBLE', lon: 'DOUBLE' } };
@@ -63,6 +64,15 @@ class Shop extends BaseModel {
 
     @Column('UDT', { udt: 'external' })
     other: unknown;
+
+    @Column('LIST', { of: 'UDT', udt: geo })
+    stops: unknown[];
+
+    @Column('INT')
+    visits: number;
+
+    @Column('TEXT')
+    label: string;
 }
 
 function setup(rows: object[] = []) {
@@ -96,5 +106,43 @@ describe('Repository with UDT columns', () => {
 
         expect(shop.loc).toEqual({ lat: 1, lon: null, seen: true });
         expect(shop.other).toEqual({ a: 1 });
+    });
+
+    describe('conditions on UDT columns', () => {
+        const at = { lat: 1, lon: 2 };
+
+        it('binds a plain object for equality, IN and comparison operators', async () => {
+            const { repo, spy } = setup();
+            await repo.findBy({ loc: at }, true);
+            await repo.countBy({ loc: In([at, { lat: 3, lon: 4 }]) }, true);
+            await repo.find({ where: { other: { operator: '=', value: { a: 1 } } } }, true);
+
+            expect(spy.mock.calls.map((call) => [call[0], call[1]])).toEqual([
+                ['SELECT * FROM shops WHERE loc = ? ALLOW FILTERING', [at]],
+                ['SELECT COUNT(*) FROM shops WHERE loc IN (?, ?) ALLOW FILTERING', [at, { lat: 3, lon: 4 }]],
+                ['SELECT * FROM shops WHERE other = ? ALLOW FILTERING', [{ a: 1 }]],
+            ]);
+        });
+
+        it('binds a plain object for Contains() on a collection of UDTs, and in aggregates', async () => {
+            const { repo, spy } = setup([{ value: 3 }]);
+            await repo.findBy({ stops: Contains(at) }, true);
+            expect(await repo.sum('visits', { loc: at }, true)).toBe(3);
+
+            expect(spy.mock.calls.map((call) => [call[0], call[1]])).toEqual([
+                ['SELECT * FROM shops WHERE stops CONTAINS ? ALLOW FILTERING', [at]],
+                ['SELECT sum(visits) AS value FROM shops WHERE loc = ? ALLOW FILTERING', [at]],
+            ]);
+        });
+
+        it('still refuses a plain object, an array or a Map against other columns', async () => {
+            const { repo, spy } = setup();
+
+            await expect(repo.findBy({ label: { a: 1 } as never })).rejects.toThrow(InvalidQueryError);
+            await expect(repo.findBy({ visits: In([{ a: 1 }] as never) })).rejects.toThrow(InvalidQueryError);
+            await expect(repo.findBy({ loc: [1, 2] as never })).rejects.toThrow(InvalidQueryError);
+            await expect(repo.findBy({ loc: new Map() as never })).rejects.toThrow(InvalidQueryError);
+            expect(spy).not.toHaveBeenCalled();
+        });
     });
 });

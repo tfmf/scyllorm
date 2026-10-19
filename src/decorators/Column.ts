@@ -65,7 +65,7 @@ export interface UserDefinedTypeField {
  *
  * Field names must be lowercase (`/^[a-z][a-z0-9_]*$/`): the driver matches the
  * keys of a written object to the folded field names exactly and silently drops
- * the rest.
+ * the rest. `constructor` and other `Object.prototype` member names are refused.
  */
 export interface UserDefinedType {
     /** The type's name: an unqualified schema identifier. */
@@ -113,8 +113,9 @@ export interface ColumnOptions {
     udt?: string | UserDefinedType;
     /**
      * Whether a `'UDT'` column renders `frozen<type>`. Defaults to true; `false`
-     * renders the bare type name, which the server rejects for types with
-     * collection fields. Collection elements are always frozen.
+     * renders the bare type name. A non-frozen column whose type definition has a
+     * LIST, SET or MAP field throws `InvalidQueryError` before any DDL, since the
+     * server refuses it. Collection elements are always frozen.
      */
     frozen?: boolean;
     /**

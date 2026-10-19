@@ -116,7 +116,24 @@ function renderType(name: string, type: ColumnType, options: ColumnOptions | und
     if (type === 'UDT') {
         const rendered = udtName(options?.udt, name, entity);
 
-        return options?.frozen === false ? rendered : `frozen<${rendered}>`;
+        if (options?.frozen !== false) {
+            return `frozen<${rendered}>`;
+        }
+
+        // Refused by the server, but only at CREATE TABLE — after the type was created, or after
+        // alter added the collection field, which no ALTER TYPE can take back
+        const udt = options.udt;
+        const hasCollection =
+            typeof udt === 'object' &&
+            Object.values(udt.fields).some((spec) =>
+                COLLECTION_TYPES.has(typeof spec === 'string' ? spec : spec?.type)
+            );
+
+        if (hasCollection) {
+            throw InvalidQueryError.unsupportedSchemaType(name, entity, 'non-frozen UDT with a collection field');
+        }
+
+        return rendered;
     }
 
     return type.toLowerCase();
@@ -154,7 +171,9 @@ function renderFields(udt: UserDefinedType, entity: string): Array<[string, stri
     }
 
     return names.map((field) => {
-        if (!UDT_FIELD_NAME.test(field)) {
+        // A field named after an Object.prototype member (`constructor`) would read the inherited
+        // member whenever a written object leaves it out, which the driver then fails to encode
+        if (!UDT_FIELD_NAME.test(field) || field in Object.prototype) {
             throw InvalidQueryError.invalidSchemaIdentifier('field', field, entity);
         }
 

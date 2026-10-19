@@ -3,8 +3,10 @@ import {
     BaseModel,
     Column,
     ColumnValidationError,
+    Contains,
     DataSource,
     Entity,
+    In,
     PrimaryKeyColumn,
     Repository,
     UserDefinedType,
@@ -125,6 +127,16 @@ describe('0.9.0 schema (e2e)', () => {
             expect(found?.home).toEqual({ street: 'Main', city: 'Porto', geo: { lat: 41.1, lon: -8.6 } });
             expect(found?.others).toEqual([{ street: 'Side', city: 'Lisbon', geo: null }]);
             expect(found?.spot).toEqual({ x: 3, y: 4 });
+        });
+
+        it('filters by a UDT value, IN of UDTs and Contains() on a list of UDTs', async () => {
+            const home = { street: 'Main', city: 'Porto', geo: { lat: 41.1, lon: -8.6 } };
+            const other = { street: 'Side', city: 'Lisbon', geo: null };
+
+            expect((await places.findBy({ home }, true)).map((p) => p.id)).toEqual([1]);
+            expect(await places.countBy({ home: In([home, { ...home, city: 'Braga' }]) }, true)).toBe(1);
+            expect((await places.findBy({ others: Contains(other) }, true)).map((p) => p.id)).toEqual([1]);
+            expect(await places.findBy({ home: { ...home, city: 'Braga' } }, true)).toEqual([]);
         });
 
         it('rejects a written object with an unknown field locally', async () => {

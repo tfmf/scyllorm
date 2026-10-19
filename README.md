@@ -950,8 +950,9 @@ event_id: types.TimeUuid | string;
 Declare the type once as a plain object and point columns at it with `udt`.
 `synchronize()` (and `buildSchema()` / `buildCreateTypes()`) emit
 `CREATE TYPE IF NOT EXISTS` before the table, nested types first, each type once.
-Columns are `frozen<...>` by default; `frozen: false` renders the bare type (the server
-refuses that for types with collection fields). Collection elements are always frozen.
+Columns are `frozen<...>` by default; `frozen: false` renders the bare type (a type with
+a collection field throws `InvalidQueryError` locally, since the server refuses it).
+Collection elements are always frozen.
 
 ```typescript
 import { BaseModel, Column, Entity, PrimaryKeyColumn, UserDefinedType } from 'scyllorm';
@@ -1000,7 +1001,10 @@ it is never created.
   passes, so a row read back from a wider live type can be saved again. Nested values
   and UDTs inside collections are not checked.
 - A type declared twice with different fields, one that contains itself, one without
-  fields or a `COUNTER` field throws `InvalidQueryError` locally.
+  fields, a `COUNTER` field or a field named `constructor` throws `InvalidQueryError` locally.
+- A plain object is a valid condition value against a UDT column (`findBy({ home: addr })`,
+  `In()`), and against a collection of UDTs for `Contains()`. Against any other column
+  it is still refused as a mis-shaped condition.
 - UDTs bind only in prepared statements, which is every statement Scyllorm builds unless
   you pass `prepare: false`.
 - A MAP keyed by a UDT needs `encoding: { map: Map }` in the client options; without it a

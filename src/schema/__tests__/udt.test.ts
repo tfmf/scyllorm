@@ -232,4 +232,58 @@ describe('buildSchema() with UDTs', () => {
         ]);
         expect(buildCreateTypes(Plain)).toEqual([]);
     });
+
+    describe('round 3 guards', () => {
+        it('rejects a non-frozen UDT column whose type has a collection field, before any DDL', () => {
+            @Entity('nf')
+            class Nf extends BaseModel {
+                @PrimaryKeyColumn('INT', { partitionKey: true })
+                id: number;
+
+                @Column('UDT', {
+                    udt: { name: 'nf_t', fields: { a: 'INT', tags: { type: 'LIST', of: 'TEXT' } } },
+                    frozen: false,
+                })
+                u: unknown;
+            }
+
+            expect(() => buildSchema(Nf)).toThrow(/non-frozen UDT with a collection field/);
+            expect(() => buildCreateTypes(Nf)).not.toThrow();
+        });
+
+        it('still renders a non-frozen UDT without collection fields, and a named one, bare', () => {
+            @Entity('nf_ok')
+            class NfOk extends BaseModel {
+                @PrimaryKeyColumn('INT', { partitionKey: true })
+                id: number;
+
+                @Column('UDT', {
+                    udt: { name: 'pt', fields: { x: 'INT', inner: { type: 'UDT', udt: 'other' } } },
+                    frozen: false,
+                })
+                p: unknown;
+
+                @Column('UDT', { udt: 'external', frozen: false })
+                q: unknown;
+            }
+
+            expect(buildCreateTable(NfOk)).toBe(
+                'CREATE TABLE IF NOT EXISTS nf_ok (id int, p pt, q external, PRIMARY KEY (id))'
+            );
+        });
+
+        it('rejects a field named after an Object.prototype member', () => {
+            @Entity('ctors')
+            class Ctor extends BaseModel {
+                @PrimaryKeyColumn('INT', { partitionKey: true })
+                id: number;
+
+                @Column('UDT', { udt: { name: 'ctor_t', fields: { constructor: 'TEXT', label: 'TEXT' } } })
+                body: unknown;
+            }
+
+            expect(() => buildCreateTypes(Ctor)).toThrow(InvalidQueryError);
+            expect(() => buildCreateTypes(Ctor)).toThrow(/constructor/);
+        });
+    });
 });
