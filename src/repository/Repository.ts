@@ -493,7 +493,11 @@ export class Repository<T extends BaseModel> {
         const token = `token(${partitionKeys.join(', ')})`;
         const query = `SELECT ${projection} FROM ${this.entityClass.getTableName()} WHERE ${token} > ? AND ${token} <= ?`;
         const ranges = splitTokenRing(splits);
-        const queryOptions = this.buildQueryOptions(options);
+        // Not buildQueryOptions(): a caller's pageState belongs to one query, never to every range
+        const queryOptions = this.buildQueryOptions({
+            consistency: options?.consistency,
+            fetchSize: options?.fetchSize,
+        });
 
         const pages = streamConcurrent<T>(ranges.length, concurrency, (task, pageState) =>
             this.dataSource.executeQueryPage<T>(query, ranges[task], {

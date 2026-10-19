@@ -197,10 +197,13 @@ export function validateColumnValue(
     }
 
     if (type === 'UDT' && udt !== undefined && typeof udt === 'object') {
-        // The driver drops keys that are not fields without a word, so a typo would write nothing
+        // The driver drops keys that are not fields without a word, so a typo would write nothing.
+        // An empty undeclared key is let through: a row read back carries every live field, and
+        // writing nothing to one the declaration lacks loses nothing
         const allowed = Object.keys(udt.fields);
+        const entries = Object.entries(value as object);
 
-        if (Object.keys(value as object).some((key) => !allowed.includes(key))) {
+        if (entries.some(([key, field]) => !allowed.includes(key) && field !== null && field !== undefined)) {
             throw new ColumnValidationError({
                 column,
                 entity,

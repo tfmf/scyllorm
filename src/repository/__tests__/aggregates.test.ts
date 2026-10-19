@@ -203,7 +203,7 @@ describe('Repository aggregates', () => {
 
         it('passes Long and BigDecimal through untouched', async () => {
             const { repo, setValue } = setup();
-            const long = types.Long.fromNumber(9007199254740993);
+            const long = types.Long.fromString('9007199254740993');
             setValue(long);
             expect(await repo.sum('bigTotal', { sensor: 1 })).toBe(long);
             const dec = types.BigDecimal.fromString('12.50');

@@ -33,6 +33,12 @@ describe('UDT value validation', () => {
         expect(() => check({ alt: 3 })).not.toThrow();
     });
 
+    it('lets an empty undeclared key through, as a row read back from a wider live type carries', () => {
+        expect(() => check({ lat: 1, lon: 2, country: null }, geo)).not.toThrow();
+        expect(() => check({ lat: 1, country: undefined }, geo)).not.toThrow();
+        expect(() => check({ lat: 1, country: 'PT' }, geo)).toThrow(ColumnValidationError);
+    });
+
     it('does not put the value in the error', () => {
         expect.assertions(1);
 
