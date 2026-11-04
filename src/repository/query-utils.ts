@@ -37,9 +37,51 @@ export interface Condition {
     value: SimpleConditionValue | SimpleConditionValue[];
 }
 
+/**
+ * Conditions without a column check at compile time: any string key, any condition value.
+ * The shape to build a `where` dynamically in; it assigns to `FindOptionsWhere<T>` for a
+ * concrete entity type. Every key is still checked against the entity when the query is built.
+ */
 export interface NestedConditions {
     [key: string]: Condition | SimpleConditionValue | NestedConditions;
 }
+
+/**
+ * The column properties of an entity: every public key of `T` whose value is not a function, so
+ * methods and lifecycle hooks are left out. TypeScript cannot tell a getter from a column, so a
+ * getter is kept (and throws `UnknownColumnError` when the query is built); a private or protected
+ * column is left out, as it is from `Partial<T>`.
+ */
+export type ColumnKeys<T> = {
+    // `Function` rather than a call signature, which a property typed `Function` does not extend
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+    [K in keyof T]-?: NonNullable<T[K]> extends Function ? never : K;
+}[keyof T] &
+    string;
+
+/** True when `T` is `any`: a bare `FindOptions`, whose fields stay unchecked. */
+type IsAny<T> = 0 extends 1 & T ? true : false;
+
+/** The names `select` takes: any key of `T`, or anything in a bare `FindOptions`. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SelectKeys<T> = IsAny<T> extends true ? any : keyof T & string;
+
+/**
+ * `where` conditions checked against the entity at compile time: each key must be a column
+ * property. A value is an equality, either of the property's own type (a UDT interface
+ * included) or any scalar the driver binds, or an operator such as `In()` or `GreaterThan()`.
+ * Values are not tied to the property type: a UUID column typed `string` takes a `types.Uuid`.
+ * Each value is checked against the column's CQL type when the query is built.
+ * `null` does not compile; `undefined` does for an optional key (it is optional), and throws like `null`.
+ *
+ * In code generic over the entity type, TypeScript cannot resolve the keys; cast there with
+ * `{ id } as unknown as FindOptionsWhere<T>`, and whole options with `as unknown as FindOptions<T>`.
+ * A `Repository<BaseModel>` has no columns, so nothing is checked against it.
+ */
+export type FindOptionsWhere<T> = {
+    // NonNullable: a null condition throws when the query is built, so it should not compile
+    [K in ColumnKeys<T>]?: NonNullable<T[K]> | SimpleConditionValue | Condition;
+};
 
 export interface OrderByOption {
     column: string;
@@ -58,16 +100,27 @@ export interface ConsistencyOptions {
     consistency?: types.consistencies;
 }
 
-export interface FindOptions extends ConsistencyOptions {
+/**
+ * Options for `find()`, `findPaged()` and `stream()`. `T` is the entity type; `Repository<T>`
+ * fills it in. Left out, as in a bare `FindOptions`, nothing is checked at compile time: any
+ * column name, any value. A bare `FindOptions`, spread or not, assigns to `FindOptions<Entity>`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export interface FindOptions<T = any> extends ConsistencyOptions {
     /**
      * The columns to read instead of `*`, as property names declared on the
      * entity; validated against the entity's metadata. Unselected properties
      * of the mapped entities keep their constructor defaults, or stay
      * undefined. An empty array throws `InvalidQueryError`.
+     *
+     * Typed as any key of `T`, methods included, rather than `ColumnKeys<T>`: an array of the
+     * filtered keys stops `Repository<Base>` from being cast to `Repository<Entity>`. A method
+     * name still throws `UnknownColumnError` when the query is built. `any[]` in a bare
+     * `FindOptions`, so that spreading one into a typed call compiles.
      */
-    select?: string[];
-    where?: NestedConditions;
-    orderBy?: { [column: string]: 'ASC' | 'DESC' };
+    select?: SelectKeys<T>[];
+    where?: FindOptionsWhere<T>;
+    orderBy?: IsAny<T> extends true ? { [column: string]: 'ASC' | 'DESC' } : { [K in ColumnKeys<T>]?: 'ASC' | 'DESC' };
     /** Must be an integer from 1 to 2147483647 at runtime; anything else throws `InvalidQueryError`. */
     limit?: number;
     /**
@@ -109,8 +162,9 @@ export interface ConcurrencyOptions {
     concurrency?: number;
 }
 
-/** Options for `Repository.scan()`. */
-export interface ScanOptions extends ConsistencyOptions {
+/** Options for `Repository.scan()`. `T` is the entity type, as for `FindOptions`. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export interface ScanOptions<T = any> extends ConsistencyOptions {
     /** How many token ranges are read at once; a positive integer, 16 by default. */
     concurrency?: number;
     /** How many token ranges the ring is cut into; a positive integer, `concurrency * 4` by default. */
@@ -118,7 +172,7 @@ export interface ScanOptions extends ConsistencyOptions {
     /** The page size of each range query. */
     fetchSize?: number;
     /** The columns to read instead of `*`, as `FindOptions.select`. */
-    select?: string[];
+    select?: SelectKeys<T>[];
 }
 
 /** The values for a raw query's `:name` placeholders, keyed by name without the colon. */
@@ -316,18 +370,4 @@ export function PutKeys(entries: Record<string, unknown> | Map<unknown, unknown>
 /** Remove keys from a MAP in `update()`: `col = col - ?`. */
 export function RemoveKeys<K>(keys: K[] | Set<K>): CollectionUpdate {
     return new CollectionUpdate('RemoveKeys', keys);
-}
-
-/**
- * @deprecated Use `GreaterThan` instead.
- */
-export function MoreThan<T extends SimpleConditionValue>(value: T): Condition {
-    return GreaterThan(value);
-}
-
-/**
- * @deprecated Use `GreaterThanOrEqual` instead.
- */
-export function MoreThanOrEqual<T extends SimpleConditionValue>(value: T): Condition {
-    return GreaterThanOrEqual(value);
 }

@@ -21,7 +21,7 @@ import {
     ConsistencyOptions,
     DeleteOptions,
     SimpleConditionValue,
-    NestedConditions,
+    FindOptionsWhere,
     FindOptions,
     Page,
     RawQueryOptions,
@@ -428,12 +428,12 @@ export class Repository<T extends BaseModel> {
     /**
      * Find entities in the database based on the given conditions.
      * If no options are provided, it selects all rows from the table.
-     * @param {FindOptions} [options] The options including conditions to filter the entities.
+     * @param {FindOptions<T>} [options] The options including conditions to filter the entities.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {Promise<T[]>} The entities that match the conditions.
      * @throws {InvalidQueryError} If `limit` is not an integer from 1 to 2147483647.
      */
-    public async find(options?: FindOptions, allowFiltering: boolean = false): Promise<T[]> {
+    public async find(options?: FindOptions<T>, allowFiltering: boolean = false): Promise<T[]> {
         const { query, params } = this.buildSelectQuery(options, allowFiltering);
         const results = await this.dataSource.executeQuery<T>(query, params, this.consistencyQueryOptions(options));
         return this.loadEntities(results);
@@ -442,12 +442,12 @@ export class Repository<T extends BaseModel> {
     /**
      * Find a single page of entities, for cursor-based pagination.
      * Pass the returned `pageState` back in `options.pageState` to read the next page.
-     * @param {FindOptions} [options] The options including conditions, page size and cursor.
+     * @param {FindOptions<T>} [options] The options including conditions, page size and cursor.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {Promise<Page<T>>} The page of entities and the cursor to the next page, if any.
      * @throws {InvalidQueryError} If `limit` is not an integer from 1 to 2147483647.
      */
-    public async findPaged(options?: FindOptions, allowFiltering: boolean = false): Promise<Page<T>> {
+    public async findPaged(options?: FindOptions<T>, allowFiltering: boolean = false): Promise<Page<T>> {
         const { query, params } = this.buildSelectQuery(options, allowFiltering);
         const { rows, pageState } = await this.dataSource.executeQueryPage<T>(
             query,
@@ -466,13 +466,13 @@ export class Repository<T extends BaseModel> {
      * Iterate over entities one at a time, fetching pages lazily.
      * Only a single page is held in memory, so this is the way to scan a result
      * set too large to load with `find()`.
-     * @param {FindOptions} [options] The options including conditions and page size.
+     * @param {FindOptions<T>} [options] The options including conditions and page size.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {AsyncIterableIterator<T>} An async iterator over the matching entities.
      * @throws {InvalidQueryError} If `limit` is not an integer from 1 to 2147483647. Thrown on the
      *     first advance of the iterator, not on the call, as with any async generator.
      */
-    public async *stream(options?: FindOptions, allowFiltering: boolean = false): AsyncIterableIterator<T> {
+    public async *stream(options?: FindOptions<T>, allowFiltering: boolean = false): AsyncIterableIterator<T> {
         const { query, params } = this.buildSelectQuery(options, allowFiltering);
 
         for await (const row of this.dataSource.streamQuery<T>(query, params, this.buildQueryOptions(options))) {
@@ -487,7 +487,7 @@ export class Repository<T extends BaseModel> {
      * Rows come in no particular order. Memory is bounded by `concurrency` pages. It assumes the
      * Murmur3 partitioner (the default of ScyllaDB and Cassandra). Rows written during the scan may
      * or may not be seen. Entities are mapped like `find()`, so `afterLoad` and transformers apply.
-     * @param {ScanOptions} [options] The concurrency, number of token ranges, page size, projection
+     * @param {ScanOptions<T>} [options] The concurrency, number of token ranges, page size, projection
      *     and consistency.
      * @returns {AsyncIterableIterator<T>} An async iterator over every entity.
      * @throws {InvalidQueryError} If the entity has no partition key, `concurrency` or `splits` is not
@@ -495,7 +495,7 @@ export class Repository<T extends BaseModel> {
      * @throws {UnknownColumnError} If `select` names a column the entity does not declare.
      *     Both are thrown on the first advance of the iterator, not on the call, as with any async generator.
      */
-    public async *scan(options?: ScanOptions): AsyncIterableIterator<T> {
+    public async *scan(options?: ScanOptions<T>): AsyncIterableIterator<T> {
         const concurrency = options?.concurrency ?? 16;
         const splits = options?.splits ?? concurrency * 4;
 
@@ -549,11 +549,11 @@ export class Repository<T extends BaseModel> {
 
     /**
      * Find entities in the database based on the given conditions.
-     * @param {NestedConditions} conditions The conditions to filter the entities.
+     * @param {FindOptionsWhere<T>} conditions The conditions to filter the entities.
      * @param {boolean} allowFiltering Whether to allow filtering on the query.
      * @returns {Promise<T[]>} The entities that match the conditions.
      */
-    public async findBy(conditions: NestedConditions, allowFiltering: boolean = false): Promise<T[]> {
+    public async findBy(conditions: FindOptionsWhere<T>, allowFiltering: boolean = false): Promise<T[]> {
         const { conditionString, params } = this.buildConditionStringAndParams(conditions);
         let query = `SELECT * FROM ${this.entityClass.getTableName()} WHERE ${conditionString}`;
 
@@ -994,11 +994,11 @@ export class Repository<T extends BaseModel> {
      * A full-table count is a scan on the server side — on a large table,
      * prefer a dedicated COUNTER kept with `increment()`.
      *
-     * @param {NestedConditions} [conditions] The conditions to narrow the count, if any.
+     * @param {FindOptionsWhere<T>} [conditions] The conditions to narrow the count, if any.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {Promise<number>} How many rows matched.
      */
-    public async count(conditions?: NestedConditions, allowFiltering: boolean = false): Promise<number> {
+    public async count(conditions?: FindOptionsWhere<T>, allowFiltering: boolean = false): Promise<number> {
         if (conditions !== undefined) {
             return this.countBy(conditions, allowFiltering);
         }
@@ -1012,11 +1012,11 @@ export class Repository<T extends BaseModel> {
     /**
      * Count the rows matching the conditions.
      *
-     * @param {NestedConditions} conditions The conditions to count by.
+     * @param {FindOptionsWhere<T>} conditions The conditions to count by.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {Promise<number>} How many rows matched.
      */
-    public async countBy(conditions: NestedConditions, allowFiltering: boolean = false): Promise<number> {
+    public async countBy(conditions: FindOptionsWhere<T>, allowFiltering: boolean = false): Promise<number> {
         const { conditionString, params } = this.buildConditionStringAndParams(conditions);
         let query = `SELECT COUNT(*) FROM ${this.entityClass.getTableName()} WHERE ${conditionString}`;
 
@@ -1047,11 +1047,11 @@ export class Repository<T extends BaseModel> {
      * Cheaper than `countBy(...) > 0`: the server stops at the first match
      * instead of scanning everything that qualifies.
      *
-     * @param {NestedConditions} conditions The conditions to test.
+     * @param {FindOptionsWhere<T>} conditions The conditions to test.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {Promise<boolean>} True if at least one row matched.
      */
-    public async existsBy(conditions: NestedConditions, allowFiltering: boolean = false): Promise<boolean> {
+    public async existsBy(conditions: FindOptionsWhere<T>, allowFiltering: boolean = false): Promise<boolean> {
         const { conditionString, params } = this.buildConditionStringAndParams(conditions);
         let query = `SELECT * FROM ${this.entityClass.getTableName()} WHERE ${conditionString} LIMIT 1`;
 
@@ -1074,7 +1074,7 @@ export class Repository<T extends BaseModel> {
      * `runRawQuery` with `sum(cast(c AS bigint))`. The sum covers stored values, untouched by transformers.
      *
      * @param {string} column The numeric column to sum.
-     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {FindOptionsWhere<T>} conditions The conditions selecting the rows.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {Promise<number | types.Long | types.BigDecimal | types.Integer>} The sum as the driver returns
      * it for the column type; when no row matched, that type's zero (0, or a zero Long, Integer or BigDecimal).
@@ -1083,7 +1083,7 @@ export class Repository<T extends BaseModel> {
      */
     public async sum(
         column: keyof T & string,
-        conditions: NestedConditions,
+        conditions: FindOptionsWhere<T>,
         allowFiltering: boolean = false
     ): Promise<number | types.Long | types.BigDecimal | types.Integer> {
         return this.numericAggregate('sum', column, conditions, allowFiltering);
@@ -1099,7 +1099,7 @@ export class Repository<T extends BaseModel> {
      * untouched by transformers.
      *
      * @param {string} column The numeric column to average.
-     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {FindOptionsWhere<T>} conditions The conditions selecting the rows.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {Promise<number | types.Long | types.BigDecimal | types.Integer>} The average as the driver
      * returns it for the column type; when no row matched, that type's zero (0, or a zero Long, Integer or BigDecimal).
@@ -1108,7 +1108,7 @@ export class Repository<T extends BaseModel> {
      */
     public async avg(
         column: keyof T & string,
-        conditions: NestedConditions,
+        conditions: FindOptionsWhere<T>,
         allowFiltering: boolean = false
     ): Promise<number | types.Long | types.BigDecimal | types.Integer> {
         return this.numericAggregate('avg', column, conditions, allowFiltering);
@@ -1123,7 +1123,7 @@ export class Repository<T extends BaseModel> {
      * `transformer.from`.
      *
      * @param {string} column The column to inspect.
-     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {FindOptionsWhere<T>} conditions The conditions selecting the rows.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {Promise<T[K] | null>} The minimum, or null when no row matched.
      * @throws {UnknownColumnError} If the column is not declared on the entity.
@@ -1131,7 +1131,7 @@ export class Repository<T extends BaseModel> {
      */
     public async min<K extends keyof T & string>(
         column: K,
-        conditions: NestedConditions,
+        conditions: FindOptionsWhere<T>,
         allowFiltering: boolean = false
     ): Promise<T[K] | null> {
         return this.extremum('min', column, conditions, allowFiltering);
@@ -1146,7 +1146,7 @@ export class Repository<T extends BaseModel> {
      * `transformer.from`.
      *
      * @param {string} column The column to inspect.
-     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {FindOptionsWhere<T>} conditions The conditions selecting the rows.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {Promise<T[K] | null>} The maximum, or null when no row matched.
      * @throws {UnknownColumnError} If the column is not declared on the entity.
@@ -1154,7 +1154,7 @@ export class Repository<T extends BaseModel> {
      */
     public async max<K extends keyof T & string>(
         column: K,
-        conditions: NestedConditions,
+        conditions: FindOptionsWhere<T>,
         allowFiltering: boolean = false
     ): Promise<T[K] | null> {
         return this.extremum('max', column, conditions, allowFiltering);
@@ -1467,12 +1467,12 @@ export class Repository<T extends BaseModel> {
 
     /**
      * Build the SELECT query and parameters shared by `find()`, `findPaged()` and `stream()`.
-     * @param {FindOptions} [options] The options including projection, conditions, ordering and limit.
+     * @param {FindOptions<T>} [options] The options including projection, conditions, ordering and limit.
      * @param {boolean} [allowFiltering=false] Whether to allow filtering on the query.
      * @returns {{ query: string, params: BindableValue[] }} The query and its parameters.
      */
     private buildSelectQuery(
-        options?: FindOptions,
+        options?: FindOptions<T>,
         allowFiltering: boolean = false
     ): { query: string; params: BindableValue[] } {
         let projection = '*';
@@ -1851,10 +1851,10 @@ export class Repository<T extends BaseModel> {
 
     /**
      * Build a condition string and parameters for the given conditions.
-     * @param {NestedConditions} conditions The conditions to build the string and parameters for.
+     * @param {FindOptionsWhere<T>} conditions The conditions to build the string and parameters for.
      * @returns {{ conditionString: string, params: SimpleConditionValue[] }} The condition string and parameters.
      */
-    private buildConditionStringAndParams(conditions: NestedConditions): {
+    private buildConditionStringAndParams(conditions: FindOptionsWhere<T>): {
         conditionString: string;
         params: SimpleConditionValue[];
     } {
@@ -2055,7 +2055,7 @@ export class Repository<T extends BaseModel> {
      *
      * @param {'sum' | 'avg' | 'min' | 'max'} fn The aggregate; a literal chosen by the caller, never input.
      * @param {string} key The property name of the column.
-     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {FindOptionsWhere<T>} conditions The conditions selecting the rows.
      * @param {boolean} allowFiltering Whether to allow filtering on the query.
      * @returns {Promise<{ value: any; type: string | undefined }>} The cell as the driver returned it, and the type.
      * @throws {UnknownColumnError} If the column is not declared on the entity.
@@ -2064,7 +2064,7 @@ export class Repository<T extends BaseModel> {
     private async runAggregate(
         fn: 'sum' | 'avg' | 'min' | 'max',
         key: string,
-        conditions: NestedConditions,
+        conditions: FindOptionsWhere<T>,
         allowFiltering: boolean
     ): Promise<{ value: any; type: string | undefined }> {
         // Resolved first so an unknown column wins over any other complaint
@@ -2092,14 +2092,14 @@ export class Repository<T extends BaseModel> {
      *
      * @param {'sum' | 'avg'} fn The aggregate to run.
      * @param {string} key The property name of the column.
-     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {FindOptionsWhere<T>} conditions The conditions selecting the rows.
      * @param {boolean} allowFiltering Whether to allow filtering on the query.
      * @returns {Promise<number | types.Long | types.BigDecimal | types.Integer>} The aggregate.
      */
     private async numericAggregate(
         fn: 'sum' | 'avg',
         key: string,
-        conditions: NestedConditions,
+        conditions: FindOptionsWhere<T>,
         allowFiltering: boolean
     ): Promise<number | types.Long | types.BigDecimal | types.Integer> {
         const { value } = await this.runAggregate(fn, key, conditions, allowFiltering);
@@ -2112,14 +2112,14 @@ export class Repository<T extends BaseModel> {
      *
      * @param {'min' | 'max'} fn The aggregate to run.
      * @param {string} key The property name of the column.
-     * @param {NestedConditions} conditions The conditions selecting the rows.
+     * @param {FindOptionsWhere<T>} conditions The conditions selecting the rows.
      * @param {boolean} allowFiltering Whether to allow filtering on the query.
      * @returns {Promise<any>} The converted value, or null when there is none.
      */
     private async extremum(
         fn: 'min' | 'max',
         key: string,
-        conditions: NestedConditions,
+        conditions: FindOptionsWhere<T>,
         allowFiltering: boolean
     ): Promise<any> {
         const { value, type } = await this.runAggregate(fn, key, conditions, allowFiltering);
