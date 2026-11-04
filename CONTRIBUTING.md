@@ -18,16 +18,16 @@ Node.js LTS is what CI runs on; anything older is untested.
 
 ## Development commands
 
-| Command | What it does |
-| --- | --- |
-| `npm run build` | Compile TypeScript to `dist/` |
-| `npm test` | Run the unit suite once (vitest, driver mocked) |
-| `npm run test:watch` | Re-run on file changes |
-| `npm run test:coverage` | Run with coverage; thresholds live in `vitest.config.ts` |
-| `npm run test:e2e` | Boot a throwaway ScyllaDB container and run `e2e/` against it (needs Docker) |
-| `npm run coverage:badge` | Refresh the README coverage badge |
-| `npx eslint src/` | Lint |
-| `npx prettier --write src/` | Format |
+| Command                     | What it does                                                                 |
+| --------------------------- | ---------------------------------------------------------------------------- |
+| `npm run build`             | Compile TypeScript to `dist/`                                                |
+| `npm test`                  | Run the unit suite and the type tests once (vitest, driver mocked)           |
+| `npm run test:watch`        | Re-run on file changes                                                       |
+| `npm run test:coverage`     | Run with coverage; thresholds live in `vitest.config.ts`                     |
+| `npm run test:e2e`          | Boot a throwaway ScyllaDB container and run `e2e/` against it (needs Docker) |
+| `npm run coverage:badge`    | Refresh the README coverage badge                                            |
+| `npx eslint src/`           | Lint                                                                         |
+| `npx prettier --write src/` | Format                                                                       |
 
 The unit tests mock `cassandra-driver`, so no database is needed for the normal loop. Only
 `npm run test:e2e` talks to a real Scylla, and it tears the container down when it finishes.
@@ -42,7 +42,11 @@ src/schema/        SchemaBuilder — CREATE TABLE / schema sync
 src/data-source/   DataSource — connection handling on top of cassandra-driver
 ```
 
-Tests sit next to the code they cover, in `src/**/__tests__/*.test.ts`.
+Tests sit next to the code they cover, in `src/**/__tests__/*.test.ts`. Type tests live in
+`src/**/__tests__/*.test-d.ts`: they are compiled under the strict `tsconfig.typecheck.json`
+and never run, and they cover what the public types accept and refuse. A change to a public
+type gets a type test in both directions. Prefer `expectTypeOf` assertions to `@ts-expect-error`,
+which passes on any error, not just the one you meant.
 
 ## Code style
 
@@ -51,7 +55,7 @@ Tests sit next to the code they cover, in `src/**/__tests__/*.test.ts`.
 - Entity properties use snake_case, matching the database column names.
 - Every generated statement is plain CQL 3 — no Scylla-only extensions, because Apache Cassandra is a supported target too.
 - Never interpolate user input into a CQL string. Column and table names are validated against the entity metadata; values go in as positional `?` parameters.
-- Comments explain *why*, not *what*. If the code needs a comment to say what it does, the code is the thing to fix.
+- Comments explain _why_, not _what_. If the code needs a comment to say what it does, the code is the thing to fix.
 
 ## Pull requests
 

@@ -5,6 +5,84 @@ All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes increment the major version.
 
+## [1.0.0] - Unreleased
+
+The first major release. Every change is type-level or a removal of something deprecated:
+any call that still compiles sends the same CQL with the same parameters and fails with the
+same errors as on 0.9.
+
+### Breaking changes
+
+- **Column names are checked at compile time.** `FindOptions` and `ScanOptions` take the
+  entity type (`Repository<T>` fills it in). The `where` and `orderBy` keys must be column
+  properties of the entity, which leaves out methods and hooks. The `select` names must be
+  keys of the entity. Conditions are typed by the new `FindOptionsWhere<T>`. It applies to
+  `find()`, `findPaged()`, `stream()` and `scan()`, and to the conditions of `findBy()`,
+  `count()`, `countBy()`, `existsBy()`, `sum()`, `avg()`, `min()` and `max()`. A condition value
+  is the property's own type, any scalar the driver binds (`SimpleConditionValue`), or an
+  operator. Whether it fits the column's CQL type is still checked when the query is built.
+- **Removed `@Table`**, deprecated since 0.0.5. Use `@Entity(name)`.
+- **Removed `MoreThan()` and `MoreThanOrEqual()`**, deprecated since 0.0.8. Use `GreaterThan()` and
+  `GreaterThanOrEqual()`; they build the same condition.
+
+### Added
+
+- `ColumnKeys<T>` (an entity's column properties) and `FindOptionsWhere<T>` are exported.
+- A UDT value typed as an interface is now a valid equality condition in TypeScript
+  (`findBy({ home: addr })`), list and nullable fields included. The 0.9 workaround,
+  `In([addr])`, is no longer needed.
+
+### Migrating from 0.9
+
+**Who has to change code:**
+
+- **Anyone using `@Table`, `MoreThan()` or `MoreThanOrEqual()`**, in JavaScript or TypeScript.
+  They are gone, so the import is `undefined` and calling it throws
+  `TypeError: ... is not a function`. Rename them as below.
+- **TypeScript users with one of the patterns listed below**, such as code generic over
+  `Repository<T>`, a `select` list in a `string[]`, conditions on private or protected
+  properties, or partial UDT literals. The compiler points at each spot.
+
+**Who doesn't:**
+
+- JavaScript users who don't use the three removed APIs.
+- TypeScript users who query concrete entities by their real column names, or build `where`
+  dynamically in a `NestedConditions` variable, which is the style the README shows.
+
+**Upgrading is opt-in.** npm's `^0.9.0` range stops below 0.10.0, so a project on 0.9 stays
+there until it asks for 1.0 with `npm install scyllorm@^1.0.0`.
+
+Everything else is unchanged at runtime, so the rest of migrating means fixing compile errors:
+
+- **A typo or an unknown column** in a `where`, `orderBy` or `select` literal is now a
+  compile error. At runtime it already threw `UnknownColumnError`.
+- **A `select` list typed `string[]`** no longer assigns. Type it as `(keyof Entity)[]`.
+- **Code generic over the entity** (`function byId<T extends BaseModel>(repository: Repository<T>, ...)`,
+  or a `Repository<T>` subclass passing conditions on to `super`) cannot have its keys resolved
+  by TypeScript, not even from a `NestedConditions` variable. Cast conditions with
+  `{ id } as unknown as FindOptionsWhere<T>`, and the options of `find()`, `findPaged()`,
+  `stream()` and `scan()` (a `where`, `orderBy` or `select` literal, or a spread) with
+  `as unknown as FindOptions<T>` (or `ScanOptions<T>`). A `Repository<BaseModel>` has no
+  columns to check against at all; cast it to the entity's repository first. A generic subclass
+  that overrides one of these methods must declare the 1.0 parameter types
+  (`conditions: FindOptionsWhere<T>`, `options?: FindOptions<T>`); a `NestedConditions`
+  parameter there fails with TS2416. A subclass of a concrete `Repository<Entity>` keeps its
+  0.9 signatures.
+- **A private or protected column property** is not a key TypeScript can see from outside the
+  class, so it is refused in `where`, `orderBy` and `select` literals, as `findOneBy()`
+  already refused it. Pass such conditions through a `NestedConditions` variable.
+- **An object value is a complete value of the property's type.** A partial UDT literal
+  (`{ home: { street } }` when `home` also has a `city`) no longer compiles.
+- **Still compiles, for a concrete entity type:**
+    - a `where` built at runtime and typed `NestedConditions` (a `Record<string, unknown>`
+      now assigns too, which 0.9 refused);
+    - a loose `orderBy` record;
+    - a bare `FindOptions` or `ScanOptions` variable, spread or passed as-is;
+    - a cast from `Repository<BaseModel>` to `Repository<Entity>`;
+    - the `Partial<T>` equality methods (`findOneBy()`, `delete()`, `update()`…), which are unchanged.
+- `@Table({ name })` becomes `@Entity(name)`. `MoreThan` becomes `GreaterThan`, and
+  `MoreThanOrEqual` becomes `GreaterThanOrEqual`.
+
 ## [0.9.0] - 2026-10-19
 
 ### Added
