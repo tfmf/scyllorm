@@ -67,11 +67,19 @@ type IsAny<T> = 0 extends 1 & T ? true : false;
 type SelectKeys<T> = IsAny<T> extends true ? any : keyof T & string;
 
 /**
+ * An equality value of the property's own type. Arrays, Sets and Maps are left out: an equality
+ * on a LIST, SET or MAP column always throws when the query is built (use `Contains()`), as 0.9
+ * refused them at compile time.
+ */
+type EqualityValue<V> = V extends readonly unknown[] | ReadonlySet<unknown> | ReadonlyMap<unknown, unknown> ? never : V;
+
+/**
  * `where` conditions checked against the entity at compile time: each key must be a column
  * property. A value is an equality, either of the property's own type (a UDT interface
  * included) or any scalar the driver binds, or an operator such as `In()` or `GreaterThan()`.
  * Values are not tied to the property type: a UUID column typed `string` takes a `types.Uuid`.
- * Each value is checked against the column's CQL type when the query is built.
+ * An array, Set or Map is not an equality value. Each value is checked against the column's CQL
+ * type when the query is built.
  * `null` does not compile; `undefined` does for an optional key (it is optional), and throws like `null`.
  *
  * In code generic over the entity type, TypeScript cannot resolve the keys; cast there with
@@ -80,7 +88,7 @@ type SelectKeys<T> = IsAny<T> extends true ? any : keyof T & string;
  */
 export type FindOptionsWhere<T> = {
     // NonNullable: a null condition throws when the query is built, so it should not compile
-    [K in ColumnKeys<T>]?: NonNullable<T[K]> | SimpleConditionValue | Condition;
+    [K in ColumnKeys<T>]?: EqualityValue<NonNullable<T[K]>> | SimpleConditionValue | Condition;
 };
 
 export interface OrderByOption {

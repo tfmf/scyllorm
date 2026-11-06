@@ -5,6 +5,7 @@ import {
     Between,
     Column,
     ColumnKeys,
+    Condition,
     Contains,
     DataSource,
     Entity,
@@ -18,6 +19,7 @@ import {
     PrimaryKeyColumn,
     Repository,
     ScanOptions,
+    SimpleConditionValue,
 } from '../../index';
 import * as lib from '../../index';
 
@@ -58,6 +60,54 @@ describe('ColumnKeys', () => {
     test('is string for an untyped entity', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         expectTypeOf<ColumnKeys<any>>().toEqualTypeOf<string>();
+    });
+});
+
+// Precise assertions, so the `@ts-expect-error` cases below are not the only evidence: these pin
+// why an unknown key fails (the key unions) and that every method takes the checked types
+describe('the checked types themselves', () => {
+    test('where and orderBy are keyed by ColumnKeys; select by any key', () => {
+        expectTypeOf<keyof FindOptionsWhere<User>>().toEqualTypeOf<ColumnKeys<User>>();
+        expectTypeOf<keyof NonNullable<FindOptions<User>['orderBy']>>().toEqualTypeOf<ColumnKeys<User>>();
+        expectTypeOf<NonNullable<FindOptions<User>['select']>[number]>().toEqualTypeOf<keyof User & string>();
+        expectTypeOf<NonNullable<ScanOptions<User>['select']>[number]>().toEqualTypeOf<keyof User & string>();
+    });
+
+    test('a value is the property type, a driver scalar or an operator; collections are not values', () => {
+        expectTypeOf<FindOptionsWhere<User>['age']>().toEqualTypeOf<
+            number | SimpleConditionValue | Condition | undefined
+        >();
+        expectTypeOf<FindOptionsWhere<User>['home']>().toEqualTypeOf<
+            Address | SimpleConditionValue | Condition | undefined
+        >();
+        expectTypeOf<FindOptionsWhere<User>['tags']>().toEqualTypeOf<SimpleConditionValue | Condition | undefined>();
+    });
+
+    test('every method takes the checked types', () => {
+        expectTypeOf(users.find).parameter(0).toEqualTypeOf<FindOptions<User> | undefined>();
+        expectTypeOf(users.findPaged).parameter(0).toEqualTypeOf<FindOptions<User> | undefined>();
+        expectTypeOf(users.stream).parameter(0).toEqualTypeOf<FindOptions<User> | undefined>();
+        expectTypeOf(users.scan).parameter(0).toEqualTypeOf<ScanOptions<User> | undefined>();
+        expectTypeOf(users.findBy).parameter(0).toEqualTypeOf<FindOptionsWhere<User>>();
+        expectTypeOf(users.count).parameter(0).toEqualTypeOf<FindOptionsWhere<User> | undefined>();
+        expectTypeOf(users.countBy).parameter(0).toEqualTypeOf<FindOptionsWhere<User>>();
+        expectTypeOf(users.existsBy).parameter(0).toEqualTypeOf<FindOptionsWhere<User>>();
+        expectTypeOf(users.sum).parameter(1).toEqualTypeOf<FindOptionsWhere<User>>();
+        expectTypeOf(users.avg).parameter(1).toEqualTypeOf<FindOptionsWhere<User>>();
+        expectTypeOf(users.min<'age'>)
+            .parameter(1)
+            .toEqualTypeOf<FindOptionsWhere<User>>();
+        expectTypeOf(users.max<'age'>)
+            .parameter(1)
+            .toEqualTypeOf<FindOptionsWhere<User>>();
+    });
+});
+
+describe('collection columns', () => {
+    test('an array, Set or Map is not an equality value (it always throws at runtime)', () => {
+        // @ts-expect-error a LIST column takes Contains(), not an array
+        users.findBy({ tags: ['a'] });
+        users.findBy({ tags: Contains('a') });
     });
 });
 
@@ -217,6 +267,9 @@ describe('dynamic conditions', () => {
         users.scan({ select: columns });
 
         users.find({ select: columns as (keyof User)[] });
+
+        const checked: (keyof User)[] = ['id', 'age'];
+        users.find({ select: checked });
     });
 });
 

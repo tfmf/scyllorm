@@ -310,9 +310,11 @@ import { Between, Contains, ContainsKey } from 'scyllorm';
 // Inclusive range, emitted as `age >= ? AND age <= ?`:
 await repository.find({ where: { age: Between(25, 30) } }, true);
 
-// LIST/SET/MAP membership — needs an index on the collection or ALLOW FILTERING:
-await repository.find({ where: { tags: Contains('typescript') } }, true);
-await repository.find({ where: { metadata: ContainsKey('team') } }, true);
+// LIST/SET/MAP membership — needs an index on the collection or ALLOW FILTERING.
+// `articles` is a Repository of an entity with `tags: string[]` (LIST<TEXT>) and
+// `metadata: Record<string, string>` (MAP<TEXT, TEXT>):
+await articles.find({ where: { tags: Contains('typescript') } }, true);
+await articles.find({ where: { metadata: ContainsKey('team') } }, true);
 ```
 
 #### Select only the columns you need 📑
@@ -342,11 +344,14 @@ const latest = await readings.find({ where: { sensor_id: In([1, 2, 3]) }, perPar
 
 Since 1.0, TypeScript checks column names against the entity. `where` and `orderBy` keys
 must be column properties (methods and hooks are left out). `select` names must be keys of
-the entity; a method name type-checks there but throws `UnknownColumnError` at runtime. This covers `find()`, `findPaged()`, `stream()`, `scan()`, `findBy()`,
-`count()`, `countBy()`, `existsBy()` and `sum()`/`avg()`/`min()`/`max()`. A condition value
-is the property's own type (a UDT interface included), any scalar the driver binds (a
-`types.Uuid` against a UUID column typed `string`), or an operator. Whether the value fits
-the column's CQL type is still checked when the query is built.
+the entity; a method name type-checks there but throws `UnknownColumnError` at runtime. This
+covers `find()`, `findPaged()`, `stream()`, `scan()`, and the conditions of `findBy()`,
+`count()`, `countBy()`, `existsBy()` and `sum()`/`avg()`/`min()`/`max()` (their `column`
+argument is any key of the entity, as in 0.9). A condition value is the property's own type
+(a UDT interface included), any scalar the driver binds (a `types.Uuid` against a UUID column
+typed `string`), or an operator. An array, `Set` or `Map` is not an equality value: match a
+collection with `Contains()`. Whether the value fits the column's CQL type is still checked
+when the query is built.
 
 ```typescript
 await repository.find({ where: { frist_name: 'John' } }); // compile error: not a column
@@ -357,8 +362,8 @@ await repository.find({ select: ['lastname'] }); // compile error
 const where: NestedConditions = { [field]: 'Berlin' }; // field: a string chosen at runtime
 await repository.findBy(where);
 
-// A select list held in a string[] needs the entity's keys instead
-const columns = ['first_name', 'city'] as (keyof Employee)[];
+// A select list kept in a variable: declare it with the entity's keys (checked), not string[]
+const columns: (keyof Employee)[] = ['first_name', 'city'];
 await repository.find({ select: columns });
 
 // An options variable: annotate it with the entity to get the checks (a bare FindOptions is unchecked)
@@ -368,8 +373,9 @@ const options: FindOptions<Employee> = { where: { city: 'Berlin' }, orderBy: { a
 In code generic over the entity (a helper, or a `Repository<T>` subclass calling `super`),
 TypeScript cannot resolve the entity's keys, not even from a `NestedConditions` variable, so
 cast there: conditions to `FindOptionsWhere<T>`, and the options of `find()` and its siblings to
-`FindOptions<T>` (`ScanOptions<T>` for `scan()`). A generic subclass that overrides one of these
-methods declares its parameters with the same types. A private or protected column property is
+`FindOptions<T>` (`ScanOptions<T>` for `scan()`). A generic subclass that overrides a condition
+method (`findBy()`, `count()`, `sum()`…) declares its `conditions` as `FindOptionsWhere<T>`; an
+override of `find()` or `scan()` may keep a bare `FindOptions`/`ScanOptions`. A private or protected column property is
 equally invisible from outside the class; pass its conditions through a `NestedConditions`
 variable.
 
@@ -475,9 +481,12 @@ stable and messages are not.
 
 ```typescript
 import { ScyllormError, UnknownColumnError, InvalidQueryError, QueryFailedError, EntityNotFoundError } from 'scyllorm';
+import type { NestedConditions } from 'scyllorm';
 
 try {
-    await repository.find({ where: { nope: 1 } });
+    // A literal `{ nope: 1 }` would not compile; conditions built at runtime are checked here instead
+    const where: NestedConditions = { nope: 1 };
+    await repository.find({ where });
 } catch (error) {
     if (error instanceof UnknownColumnError) {
         // A column not declared on the entity was used in a query — CQL can't

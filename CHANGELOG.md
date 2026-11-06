@@ -19,8 +19,8 @@ same errors as on 0.9.
   keys of the entity. Conditions are typed by the new `FindOptionsWhere<T>`. It applies to
   `find()`, `findPaged()`, `stream()` and `scan()`, and to the conditions of `findBy()`,
   `count()`, `countBy()`, `existsBy()`, `sum()`, `avg()`, `min()` and `max()`. A condition value
-  is the property's own type, any scalar the driver binds (`SimpleConditionValue`), or an
-  operator. Whether it fits the column's CQL type is still checked when the query is built.
+  is the property's own type (not an array, `Set` or `Map`: match collections with
+  `Contains()`), any scalar the driver binds (`SimpleConditionValue`), or an operator. Whether it fits the column's CQL type is still checked when the query is built.
 - **Removed `@Table`**, deprecated since 0.0.5. Use `@Entity(name)`.
 - **Removed `MoreThan()` and `MoreThanOrEqual()`**, deprecated since 0.0.8. Use `GreaterThan()` and
   `GreaterThanOrEqual()`; they build the same condition.
@@ -32,13 +32,22 @@ same errors as on 0.9.
   (`findBy({ home: addr })`), list and nullable fields included. The 0.9 workaround,
   `In([addr])`, is no longer needed.
 
+### Changed
+
+- A bare `FindOptions` (no entity type) checks nothing at compile time, values included: 0.9's
+  `NestedConditions` refused `null` or a function there. Such values still throw when the query
+  is built. Give the options the entity type (`FindOptions<Employee>`) to get the checks.
+- The `column` argument of `sum()`, `avg()`, `min()`, `max()`, `increment()` and `decrement()`
+  stays any key of the entity, as in 0.9; only their conditions are newly checked.
+
 ### Migrating from 0.9
 
 **Who has to change code:**
 
 - **Anyone using `@Table`, `MoreThan()` or `MoreThanOrEqual()`**, in JavaScript or TypeScript.
-  They are gone, so the import is `undefined` and calling it throws
-  `TypeError: ... is not a function`. Rename them as below.
+  They are gone. Through `require()` the name is `undefined`, and calling it throws
+  `TypeError: ... is not a function`. A native ES module that imports one by name fails at
+  startup with `SyntaxError: Named export 'MoreThan' not found`. Rename them as below.
 - **TypeScript users with one of the patterns listed below**, such as code generic over
   `Repository<T>`, a `select` list in a `string[]`, conditions on private or protected
   properties, or partial UDT literals. The compiler points at each spot.
@@ -56,7 +65,8 @@ Everything else is unchanged at runtime, so the rest of migrating means fixing c
 
 - **A typo or an unknown column** in a `where`, `orderBy` or `select` literal is now a
   compile error. At runtime it already threw `UnknownColumnError`.
-- **A `select` list typed `string[]`** no longer assigns. Type it as `(keyof Entity)[]`.
+- **A `select` list typed `string[]`** no longer assigns. Declare it as `(keyof Entity)[]`
+  (`const columns: (keyof Employee)[] = ['first_name']` is checked; a cast is not).
 - **Code generic over the entity** (`function byId<T extends BaseModel>(repository: Repository<T>, ...)`,
   or a `Repository<T>` subclass passing conditions on to `super`) cannot have its keys resolved
   by TypeScript, not even from a `NestedConditions` variable. Cast conditions with
@@ -64,10 +74,11 @@ Everything else is unchanged at runtime, so the rest of migrating means fixing c
   `stream()` and `scan()` (a `where`, `orderBy` or `select` literal, or a spread) with
   `as unknown as FindOptions<T>` (or `ScanOptions<T>`). A `Repository<BaseModel>` has no
   columns to check against at all; cast it to the entity's repository first. A generic subclass
-  that overrides one of these methods must declare the 1.0 parameter types
-  (`conditions: FindOptionsWhere<T>`, `options?: FindOptions<T>`); a `NestedConditions`
-  parameter there fails with TS2416. A subclass of a concrete `Repository<Entity>` keeps its
-  0.9 signatures.
+  that overrides a condition method (`findBy()`, `count()`, `countBy()`, `existsBy()`, `sum()`,
+  `avg()`, `min()`, `max()`) must declare `conditions: FindOptionsWhere<T>`; a `NestedConditions`
+  parameter there fails with TS2416. Overrides of `find()`, `findPaged()`, `stream()` and
+  `scan()` may keep a bare `FindOptions`/`ScanOptions`. A subclass of a concrete
+  `Repository<Entity>` keeps its 0.9 signatures.
 - **A private or protected column property** is not a key TypeScript can see from outside the
   class, so it is refused in `where`, `orderBy` and `select` literals, as `findOneBy()`
   already refused it. Pass such conditions through a `NestedConditions` variable.
