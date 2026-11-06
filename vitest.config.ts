@@ -17,6 +17,13 @@ export default defineConfig({
         globals: true,
         environment: 'node',
         include: ['src/**/__tests__/**/*.test.ts'],
+        // Type tests (`*.test-d.ts`) are compiled, never run, under a strict config, which is how most
+        // consumers compile against the published declarations. Part of every `npm test`.
+        typecheck: {
+            enabled: true,
+            include: ['src/**/__tests__/**/*.test-d.ts'],
+            tsconfig: './tsconfig.typecheck.json',
+        },
         coverage: {
             provider: 'v8',
             reporter: ['text', 'html', 'lcov', 'json-summary'],

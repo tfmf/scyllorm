@@ -31,6 +31,20 @@ npm install scyllorm
 
 (https://www.npmjs.com/package/scyllorm)
 
+### Upgrading from 0.9 ⬆️
+
+1.0 is a major release; an existing `^0.9.0` dependency stays on 0.9 until you install
+`scyllorm@^1.0.0`. Runtime behaviour is unchanged, and most projects upgrade without touching
+code. You have changes to make if you:
+
+- use `@Table`, `MoreThan()` or `MoreThanOrEqual()` (removed: use `@Entity(name)`,
+  `GreaterThan()`, `GreaterThanOrEqual()`), or
+- write TypeScript that the new compile-time column checks reject (§6, "Checked at compile
+  time"): code generic over `Repository<T>`, a `select` list in a `string[]`, conditions on
+  private or protected properties, or partial UDT literals.
+
+The 1.0.0 section of [CHANGELOG.md](CHANGELOG.md) lists every case with its fix.
+
 ## Step-by-Step Guide 🛠
 
 ### 1. Summon ScyllaDB via Docker 🐳
@@ -296,9 +310,11 @@ import { Between, Contains, ContainsKey } from 'scyllorm';
 // Inclusive range, emitted as `age >= ? AND age <= ?`:
 await repository.find({ where: { age: Between(25, 30) } }, true);
 
-// LIST/SET/MAP membership — needs an index on the collection or ALLOW FILTERING:
-await repository.find({ where: { tags: Contains('typescript') } }, true);
-await repository.find({ where: { metadata: ContainsKey('team') } }, true);
+// LIST/SET/MAP membership — needs an index on the collection or ALLOW FILTERING.
+// `articles` is a Repository of an entity with `tags: string[]` (LIST<TEXT>) and
+// `metadata: Record<string, string>` (MAP<TEXT, TEXT>):
+await articles.find({ where: { tags: Contains('typescript') } }, true);
+await articles.find({ where: { metadata: ContainsKey('team') } }, true);
 ```
 
 #### Select only the columns you need 📑
@@ -322,6 +338,55 @@ can sit next to `limit`:
 ```typescript
 // latest 3 readings per sensor, for these sensors (clustering order: newest first)
 const latest = await readings.find({ where: { sensor_id: In([1, 2, 3]) }, perPartitionLimit: 3 });
+```
+
+#### Checked at compile time 🔒
+
+Since 1.0, TypeScript checks column names against the entity. `where` and `orderBy` keys
+must be column properties (methods and hooks are left out). `select` names must be keys of
+the entity; a method name type-checks there but throws `UnknownColumnError` at runtime. This
+covers `find()`, `findPaged()`, `stream()`, `scan()`, and the conditions of `findBy()`,
+`count()`, `countBy()`, `existsBy()` and `sum()`/`avg()`/`min()`/`max()` (their `column`
+argument is any key of the entity, as in 0.9). A condition value is the property's own type
+(a UDT interface included), any scalar the driver binds (a `types.Uuid` against a UUID column
+typed `string`), or an operator. An array, `Set` or `Map` is not an equality value: match a
+collection with `Contains()`. Whether the value fits the column's CQL type is still checked
+when the query is built.
+
+```typescript
+await repository.find({ where: { frist_name: 'John' } }); // compile error: not a column
+await repository.find({ select: ['lastname'] }); // compile error
+
+// Built at runtime: a NestedConditions (or a Record<string, unknown>) assigns, and every
+// key is checked against the entity when the query is built (UnknownColumnError)
+const where: NestedConditions = { [field]: 'Berlin' }; // field: a string chosen at runtime
+await repository.findBy(where);
+
+// A select list kept in a variable: declare it with the entity's keys (checked), not string[]
+const columns: (keyof Employee)[] = ['first_name', 'city'];
+await repository.find({ select: columns });
+
+// An options variable: annotate it with the entity to get the checks (a bare FindOptions is unchecked)
+const options: FindOptions<Employee> = { where: { city: 'Berlin' }, orderBy: { age: 'DESC' } };
+```
+
+In code generic over the entity (a helper, or a `Repository<T>` subclass calling `super`),
+TypeScript cannot resolve the entity's keys, not even from a `NestedConditions` variable, so
+cast there: conditions to `FindOptionsWhere<T>`, and the options of `find()` and its siblings to
+`FindOptions<T>` (`ScanOptions<T>` for `scan()`). A generic subclass that overrides a condition
+method (`findBy()`, `count()`, `sum()`…) declares its `conditions` as `FindOptionsWhere<T>`; an
+override of `find()` or `scan()` may keep a bare `FindOptions`/`ScanOptions`. A private or protected column property is
+equally invisible from outside the class; pass its conditions through a `NestedConditions`
+variable.
+
+```typescript
+function byId<T extends BaseModel>(repository: Repository<T>, id: string) {
+    return repository.findBy({ id } as unknown as FindOptionsWhere<T>);
+}
+
+function newest<T extends BaseModel>(repository: Repository<T>, id: string) {
+    return repository.find({ where: { id }, orderBy: { created_at: 'DESC' } } as unknown as FindOptions<T>);
+}
 ```
 
 ### 7. Handle Large Result Sets 📄
@@ -416,9 +481,12 @@ stable and messages are not.
 
 ```typescript
 import { ScyllormError, UnknownColumnError, InvalidQueryError, QueryFailedError, EntityNotFoundError } from 'scyllorm';
+import type { NestedConditions } from 'scyllorm';
 
 try {
-    await repository.find({ where: { nope: 1 } });
+    // A literal `{ nope: 1 }` would not compile; conditions built at runtime are checked here instead
+    const where: NestedConditions = { nope: 1 };
+    await repository.find({ where });
 } catch (error) {
     if (error instanceof UnknownColumnError) {
         // A column not declared on the entity was used in a query — CQL can't
@@ -1007,10 +1075,8 @@ it is never created.
   `In()`), and against a collection of UDTs for `Contains()`. Against any other column
   it is still refused as a mis-shaped condition. A value that owns an `operator` key is
   read as an operator object, which matters for a type named by string `udt`.
-  In TypeScript, `findBy({ home: addr })` only type-checks when every field of `addr` is a
-  non-null scalar (or a nested object of those). For any other value — a list field, or the
-  nullable fields a read returns — write the equality as `findBy({ home: In([addr]) })`,
-  whose type parameter takes any object.
+  In TypeScript, `findBy({ home: addr })` takes any value of the property's declared type,
+  list and nullable fields included.
 - UDTs bind only in prepared statements, which is every statement Scyllorm builds unless
   you pass `prepare: false`.
 - A MAP keyed by a UDT needs `encoding: { map: Map }` in the client options; without it a
@@ -1084,11 +1150,15 @@ And that’s it! If you followed along and didn’t encounter any errors, you’
 The suite runs on [Vitest](https://vitest.dev/) — no live ScyllaDB required, the driver is mocked.
 
 ```bash
-npm test              # run the suite once
+npm test              # run the suite once: unit tests and type tests
 npm run test:watch    # re-run on file changes
 npm run test:coverage # run with coverage, report written to coverage/
 npm run test:e2e      # end-to-end: boots ScyllaDB in Docker, runs e2e/, tears it down
 ```
+
+The type tests (`src/**/__tests__/*.test-d.ts`) are compiled, never run, under the strict
+`tsconfig.typecheck.json`. They pin down what the public types accept and refuse, so a type
+change that would break users' code fails the suite.
 
 Open `coverage/index.html` for a browsable, file-by-file breakdown. CI runs
 `test:coverage` on every PR and fails the build if coverage drops below the

@@ -1,6 +1,7 @@
 src/
 scripts/
 tsconfig.json
+tsconfig.typecheck.json
 vitest.config.ts
 *.log
 node_modules/

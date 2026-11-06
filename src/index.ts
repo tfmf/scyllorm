@@ -18,8 +18,6 @@ export {
     In,
     LessThan,
     LessThanOrEqual,
-    MoreThan,
-    MoreThanOrEqual,
     GreaterThan,
     GreaterThanOrEqual,
     Between,
@@ -35,11 +33,13 @@ export {
     BatchStatement,
     BindableValue,
     CollectionOperation,
+    ColumnKeys,
     ConcurrencyOptions,
     Condition,
     ConsistencyOptions,
     DeleteOptions,
     FindOptions,
+    FindOptionsWhere,
     NestedConditions,
     OperatorType,
     OrderByOption,
@@ -67,7 +67,7 @@ export {
 } from './errors';
 export type { UnknownColumnDetails, EntityNotFoundDetails, ColumnValidationDetails } from './errors';
 
-// Exporting the Column, Table, and PrimaryKey decorators for defining model structures
+// Exporting the Column, PrimaryKey, Index and Entity decorators for defining model structures
 export { Column } from './decorators/Column';
 export type {
     ColumnType,
@@ -77,7 +77,6 @@ export type {
     UserDefinedTypeField,
 } from './decorators/Column';
 export type { PrimaryKeyColumnType, PrimaryKeyColumnOptions } from './decorators/PrimaryKey';
-export { Table } from './decorators/Table';
 export { PrimaryKeyColumn } from './decorators/PrimaryKey';
 export { Index } from './decorators/IndexDecorator';
 export { Entity } from './decorators/Entity';
