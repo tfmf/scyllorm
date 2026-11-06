@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes increment the major version.
 
-## [1.0.0] - Unreleased
+## [1.0.0] - 2026-11-06
 
 The first major release. Every change is type-level or a removal of something deprecated:
 any call that still compiles sends the same CQL with the same parameters and fails with the
